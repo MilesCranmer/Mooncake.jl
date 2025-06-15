@@ -240,16 +240,26 @@ end
     end
 end
 
+# -----------------------------------------------------------------------------
+# TangentNode support for _add_to_primal (restored).
+# -----------------------------------------------------------------------------
 function Mooncake._add_to_primal_internal(
-    c::Mooncake.MaybeCache, p::N, t::TangentNode{Tv,D}, unsafe::Bool
+    c::Mooncake.MaybeCache,
+    p::N,
+    t::TangentNode{Tv,D},
+    unsafe::Bool,
 ) where {T,D,N<:AbstractExpressionNode{T,D},Tv}
     key = (p, t, unsafe)
     return get!(c, key) do
         _add_to_primal_internal_helper(c, p, t, unsafe)
     end::N
 end
+
 @generated function _add_to_primal_internal_helper(
-    c::Mooncake.MaybeCache, p::N, t::TangentNode{Tv,D}, unsafe::Bool
+    c::Mooncake.MaybeCache,
+    p::N,
+    t::TangentNode{Tv,D},
+    unsafe::Bool,
 ) where {T,D,N<:AbstractExpressionNode{T,D},Tv}
     quote
         deg = p.degree
@@ -268,12 +278,32 @@ end
                     branch_copy,
                     p,
                     j -> Mooncake._add_to_primal_internal(
-                        c, get_child(p, j), get_child(t, j), unsafe
+                        c,
+                        get_child(p, j),
+                        get_child(t, j),
+                        unsafe,
                     )
                 )
             )
         end
     end
+end
+
+# -----------------------------------------------------------------------------
+# Nullable support: perturb the wrapped expression while leaving the null flag
+# untouched (or early-exit if the value is null).
+# -----------------------------------------------------------------------------
+function Mooncake._add_to_primal_internal(
+    c::Mooncake.MaybeCache,
+    p::Nullable{N},
+    t::NamedTuple{(:null,:x),Tuple{Mooncake.NoTangent,Tx}},
+    unsafe::Bool,
+) where {T,D,N<:AbstractExpressionNode{T,D},Tx}
+    (t === NoTangent()) && return p  # nothing to add
+    p.null && return p              # null ⇒ no perturbation possible
+
+    new_x = Mooncake._add_to_primal_internal(c, p.x, t.x, unsafe)
+    return constructorof(p)(false, new_x)
 end
 
 function Mooncake._diff_internal(
