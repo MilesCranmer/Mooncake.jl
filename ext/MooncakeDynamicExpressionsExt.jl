@@ -327,7 +327,12 @@ end
             if p.constant
                 TangentNode{Tv,D}(Mooncake._diff_internal(c, p.val, q.val))
             else
-                NoTangent()
+                # Variable leaf: parameter-free. Represent its zero-tangent as a
+                # TangentNode stub rather than `NoTangent()` so that callers
+                # expecting a TangentNode of the correct type (e.g. the `tree`
+                # field of an `Expression` tangent) receive a value with the
+                # appropriate type.
+                TangentNode{Tv,D}(NoTangent())
             end
         else
             Base.Cartesian.@nif(
