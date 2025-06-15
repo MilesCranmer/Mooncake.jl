@@ -10,6 +10,7 @@ using DynamicExpressions:
     get_child,
     get_children,
     set_children!
+using DynamicExpressions.UtilsModule: Nullable as UtilsNullable
 using Mooncake
 using Mooncake: NoTangent
 using Random: AbstractRNG
@@ -41,8 +42,10 @@ function Mooncake.tangent_type(::Type{TangentNode{Tv,D}}) where {Tv,D}
     return Tvv === NoTangent ? NoTangent : TangentNode{Tvv,D}
 end
 function Mooncake.tangent_type(::Type{Nullable{N}}) where {T,D,N<:AbstractExpressionNode{T,D}}
-    Tv = Mooncake.tangent_type(T)
-    return Tv === NoTangent ? NoTangent : @NamedTuple{null::NoTangent, x::TangentNode{Tv,D}}
+    return NoTangent
+end
+function Mooncake.tangent_type(::Type{UtilsNullable{N}}) where {T,D,N<:AbstractExpressionNode{T,D}}
+    return NoTangent
 end
 function Mooncake.tangent_type(
     ::Type{TangentNode{Tv,D}}, ::Type{Mooncake.NoRData}
@@ -343,13 +346,13 @@ function (pb::Pullback{T,field_sym,n_args})(Δy_rdata) where {T,field_sym,n_args
 end
 
 function _wrap_nullable(::Nullable{N}, tchild) where {T,D,N<:AbstractExpressionNode{T,D}}
-    if tchild isa NoTangent
-        Tv = Mooncake.tangent_type(T)
-        stub = Tv === NoTangent ? NoTangent() : TangentNode{Tv,D}(NoTangent())
-        return (; null=NoTangent(), x=stub)
-    else
-        return (; null=NoTangent(), x=tchild)
-    end
+    # Since tangent_type for Nullable is NoTangent, always return NoTangent
+    return NoTangent()
+end
+
+function _wrap_nullable(::UtilsNullable{N}, tchild) where {T,D,N<:AbstractExpressionNode{T,D}}
+    # Since tangent_type for UtilsNullable is NoTangent, always return NoTangent
+    return NoTangent()
 end
 
 function _rrule_getfield_common(
@@ -488,6 +491,30 @@ end
             )
         end
     end
+end
+
+# Also handle more general Nullable cases to ensure we catch everything
+function Mooncake.tangent_type(::Type{Nullable{N}}) where {N}
+    return NoTangent
+end
+function Mooncake.tangent_type(::Type{UtilsNullable{N}}) where {N}
+    return NoTangent
+end
+
+# Handle tuples containing Nullable types explicitly
+function Mooncake.tangent_type(::Type{Tuple{Nullable{N1}, Nullable{N2}}}) where {N1, N2}
+    return Tuple{NoTangent, NoTangent}
+end
+function Mooncake.tangent_type(::Type{Tuple{UtilsNullable{N1}, UtilsNullable{N2}}}) where {N1, N2}
+    return Tuple{NoTangent, NoTangent}
+end
+
+# Handle NTuple cases that might appear
+function Mooncake.tangent_type(::Type{NTuple{N, Nullable{T}}}) where {N, T}
+    return NTuple{N, NoTangent}
+end
+function Mooncake.tangent_type(::Type{NTuple{N, UtilsNullable{T}}}) where {N, T}
+    return NTuple{N, NoTangent}
 end
 
 end
