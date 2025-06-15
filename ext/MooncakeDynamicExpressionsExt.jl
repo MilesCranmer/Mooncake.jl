@@ -593,4 +593,13 @@ function Mooncake.tangent_type(::Type{F}) where {F<:Function}
     return NoTangent
 end
 
+# Specialisation: Tuple/NTuple of Nullable expression nodes ----------------------
+@foldable function Mooncake.tangent_type(::Type{P}) where {T,D,N<:AbstractExpressionNode{T,D},Len,P<:Tuple{Vararg{Nullable{N},Len}}}
+    # Tangent of the wrapped value
+    Tv = Mooncake.tangent_type(T)
+    Tv === NoTangent && return NoTangent
+    NT = @NamedTuple{null::NoTangent, x::TangentNode{Tv,D}}
+    return Tuple{Vararg{NT,Len}}
+end
+
 end
