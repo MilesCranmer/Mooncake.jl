@@ -4,7 +4,7 @@ Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using Mooncake
 using Mooncake: Mooncake
-using Mooncake.TestUtils
+using Mooncake.TestUtils: test_rule
 using DynamicExpressions, Random
 using DifferentiationInterface: AutoMooncake, gradient, prepare_gradient
 using StableRNGs, Test
