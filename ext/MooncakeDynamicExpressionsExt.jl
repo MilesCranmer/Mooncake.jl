@@ -606,16 +606,6 @@ end
 # vararg-nullable method accidentally matching `Tuple{}`).
 Mooncake.@foldable tangent_type(::Type{Tuple{}}) = NoTangent
 
-# Exactly two Nullable elements (most common in DynamicExpressions trees).
-Mooncake.@foldable function Mooncake.tangent_type(
-    ::Type{Tuple{Nullable{N},Nullable{N}}}
-) where {T,D,N<:AbstractExpressionNode{T,D}}
-    Tv = Mooncake.tangent_type(T)
-    Tv === NoTangent && return NoTangent
-    NT = @NamedTuple{null::NoTangent, x::TangentNode{Tv,D}}
-    return Tuple{NT,NT}
-end
-
 # Length-1 tuple of Nullable expression nodes -----------------------------------
 Mooncake.@foldable function Mooncake.tangent_type(
     ::Type{Tuple{Nullable{N}}}
@@ -624,6 +614,16 @@ Mooncake.@foldable function Mooncake.tangent_type(
     Tv === NoTangent && return NoTangent
     NT = @NamedTuple{null::NoTangent, x::TangentNode{Tv,D}}
     return Tuple{NT}
+end
+
+# Exactly two Nullable elements (most common in DynamicExpressions trees).
+Mooncake.@foldable function Mooncake.tangent_type(
+    ::Type{Tuple{Nullable{N},Nullable{N}}}
+) where {T,D,N<:AbstractExpressionNode{T,D}}
+    Tv = Mooncake.tangent_type(T)
+    Tv === NoTangent && return NoTangent
+    NT = @NamedTuple{null::NoTangent, x::TangentNode{Tv,D}}
+    return Tuple{NT,NT}
 end
 
 # Generic NTuple (length ≥ 1) of Nullable elements.
