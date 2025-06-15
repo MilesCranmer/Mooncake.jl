@@ -37,11 +37,12 @@ function Mooncake.tangent_type(::Type{<:AbstractExpressionNode{T,D}}) where {T,D
     return Tv === NoTangent ? NoTangent : TangentNode{Tv,D}
 end
 function Mooncake.tangent_type(::Type{TangentNode{Tv,D}}) where {Tv,D}
-    return TangentNode{Tv,D}
+    Tvv = Mooncake.tangent_type(Tv)
+    return Tvv === NoTangent ? NoTangent : TangentNode{Tvv,D}
 end
-function Mooncake.tangent_type(::Type{Nullable{T}}) where {T}
-    Tx = Mooncake.tangent_type(T)
-    return Tx === NoTangent ? NoTangent : @NamedTuple{null::NoTangent, x::Tx}
+function Mooncake.tangent_type(::Type{Nullable{N}}) where {T,D,N<:AbstractExpressionNode{T,D}}
+    Tv = Mooncake.tangent_type(T)
+    return Tv === NoTangent ? NoTangent : @NamedTuple{null::NoTangent, x::TangentNode{Tv,D}}
 end
 function Mooncake.tangent_type(
     ::Type{TangentNode{Tv,D}}, ::Type{Mooncake.NoRData}
@@ -178,6 +179,8 @@ end
 # Algebraic helpers (_dot / _scale / _add_to_primal / _diff)
 ################################################################################
 
+Mooncake._dot_internal(c::Mooncake.MaybeCache, t::TangentNode, s::NoTangent) = 0.0
+Mooncake._dot_internal(c::Mooncake.MaybeCache, t::NoTangent, s::TangentNode) = 0.0
 @generated function Mooncake._dot_internal(
     c::Mooncake.MaybeCache, t::TangentNode{Tv,D}, s::TangentNode{Tv,D}
 ) where {Tv,D}
