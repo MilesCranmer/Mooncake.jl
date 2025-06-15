@@ -39,7 +39,14 @@ end
 function Mooncake.tangent_type(::Type{TangentNode{Tv,D}}) where {Tv,D}
     return TangentNode{Tv,D}
 end
+function Mooncake.tangent_type(::Type{Nullable{N}}) where {T,D,N<:AbstractExpressionNode{T,D}}
+    Tv = Mooncake.tangent_type(T)
+    return Tv === NoTangent ? NoTangent : @NamedTuple{null::NoTangent, x::TangentNode{Tv,D}}
+end
 function Mooncake.tangent_type(::Type{Nullable{T}}) where {T}
+    if T <: AbstractExpressionNode
+        error("Use specialized method for Nullable{<:AbstractExpressionNode}")
+    end
     Tx = Mooncake.tangent_type(T)
     return Tx === NoTangent ? NoTangent : @NamedTuple{null::NoTangent, x::Tx}
 end
@@ -485,6 +492,40 @@ end
             )
         end
     end
+end
+
+# Override tangent_field_types_exprs for AbstractExpressionNode to avoid circular dependency
+# This is the key fix - we need to handle the struct's field types directly
+function Mooncake.tangent_field_types_exprs(::Type{N}) where {T,D,N<:AbstractExpressionNode{T,D}}
+    field_names = fieldnames(N)
+    inits = Mooncake.always_initialised(N)
+    
+    # Get the tangent type for T once
+    Tv = Mooncake.tangent_type(T)
+    
+    tangent_type_exprs = map(zip(field_names, inits)) do (fname, init)
+        if fname === :children
+            # For the children field, we manually specify the tangent type to break recursion
+            if Tv === NoTangent
+                children_tangent_expr = :(Tuple{NoTangent, NoTangent})
+            else
+                children_tangent_expr = quote
+                    Tuple{
+                        @NamedTuple{null::Mooncake.NoTangent, x::TangentNode{$Tv,$D}},
+                        @NamedTuple{null::Mooncake.NoTangent, x::TangentNode{$Tv,$D}}
+                    }
+                end
+            end
+            return init ? children_tangent_expr : Expr(:curly, Mooncake.PossiblyUninitTangent, children_tangent_expr)
+        else
+            # For other fields, use the normal tangent_type call
+            field_type = fieldtype(N, fname)
+            T_expr = Expr(:call, :tangent_type, field_type)
+            return init ? T_expr : Expr(:curly, Mooncake.PossiblyUninitTangent, T_expr)
+        end
+    end
+    
+    return tangent_type_exprs
 end
 
 end
