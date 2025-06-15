@@ -576,4 +576,16 @@ function Mooncake.rrule!!(
     return y_cd, expr_matrix_pullback
 end
 
+################################################################################
+# Generic fallback for Function-like types (anonymous closures, etc.)
+################################################################################
+
+# Treat any Function subtype that is not already covered (i.e., closures) as
+# non-differentiable. This prevents Mooncake from trying to construct perturbed
+# versions of compiler-generated closure structs, which rarely provide a
+# default constructor and therefore trigger errors in `_add_to_primal`.
+function Mooncake.tangent_type(::Type{F}) where {F<:Function}
+    return NoTangent
+end
+
 end
