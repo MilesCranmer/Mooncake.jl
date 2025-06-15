@@ -490,4 +490,60 @@ end
     end
 end
 
+################################################################################
+# rrule for evaluating an Expression
+################################################################################
+
+# We mark calls of an `AbstractExpressionNode` (i.e. `Expression`) on a matrix as a
+# primitive so that `build_rrule` will pick up the hand-written rule below.
+# The rule is defined for any concrete `AbstractExpressionNode` and for any
+# `AbstractMatrix` of IEEE floats.
+Mooncake.@is_primitive Mooncake.MinimalCtx Tuple{
+    N,AbstractMatrix{<:Base.IEEEFloat}
+} where {T,D,N<:AbstractExpressionNode{T,D}}
+
+# Helper: centred finite-difference VJP. Given an expression `expr`, a matrix `X`
+# (copied inside the function) and an incoming reverse-mode sensitivity `Δy`, this
+# returns the vector–Jacobian product  \( J^T Δy \), where `J` is the Jacobian of
+# `expr` w.r.t. `X` (flattened).
+function _finite_diff_vjp(expr, X::AbstractMatrix, Δy; ε::Float64=1e-6)
+    dX = similar(X)
+    δ = eltype(X)(ε)
+    for idx in eachindex(X)
+        # Two perturbed copies of `X` (avoids mutating the original).
+        X_plus  = copy(X)
+        X_minus = copy(X)
+        X_plus[idx]  += δ
+        X_minus[idx] -= δ
+
+        y_plus  = expr(X_plus)
+        y_minus = expr(X_minus)
+
+        # Central difference approximation of the derivative of dot(expr(X), Δy)
+        dX[idx] = sum((y_plus .- y_minus) .* Δy) / (2*δ)
+    end
+    return dX
+end
+
+function Mooncake.rrule!!(
+    expr_cd::Mooncake.CoDual{N,TangentNode{Tv,D}},
+    X_cd::Mooncake.CoDual{A, A},
+) where {T,D,P<:Base.IEEEFloat,N<:AbstractExpressionNode{T,D},Tv,A<:AbstractMatrix{P}}
+    # Extract primals
+    expr = Mooncake.primal(expr_cd)
+    X    = Mooncake.primal(X_cd)
+
+    # Forward pass
+    y = expr(X)
+    y_cd = Mooncake.CoDual(y, Mooncake.NoFData())
+
+    # Reverse pass (pullback)
+    function expr_matrix_pullback(Δy_rdata)
+        dX = _finite_diff_vjp(expr, X, Δy_rdata)
+        return Mooncake.NoRData(), dX
+    end
+
+    return y_cd, expr_matrix_pullback
+end
+
 end
