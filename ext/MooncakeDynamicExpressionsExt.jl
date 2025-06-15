@@ -55,6 +55,14 @@ function Mooncake.tangent_type(
 ) where {Tv,D}
     return TangentNode{Tv,D}
 end
+
+# Add two-argument tangent_type for Nullable tangent types (which are NamedTuples)
+function Mooncake.tangent_type(
+    ::Type{@NamedTuple{null::Mooncake.NoTangent, x::TangentNode{Tv,D}}}, ::Type{Mooncake.NoRData}
+) where {Tv,D}
+    return @NamedTuple{null::Mooncake.NoTangent, x::TangentNode{Tv,D}}
+end
+
 function Mooncake.tangent(t::TangentNode, ::Mooncake.NoRData)
     return t
 end
