@@ -59,14 +59,14 @@ end
 # Standard TestUtils tests
 @testset "TestUtils systematic tests" begin
     # Set up common test data
-    operators = OperatorEnum(1 => (cos, sin, exp, log), 2 => (+, -, *, /))
+    operators = OperatorEnum(1 => (cos, sin, exp, log, abs), 2 => (+, -, *, /))
     
     # Helper function to create test expressions
     function create_test_expressions()
         x1 = Expression(Node{Float64}(; feature=1); operators)
         x2 = Expression(Node{Float64}(; feature=2); operators)
         
-        # Various expression types
+        # Various expression types - using only operators that exist
         expressions = [
             x1,  # Simple variable
             x1 + 1.0,  # Variable plus constant
