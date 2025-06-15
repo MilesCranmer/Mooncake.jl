@@ -629,4 +629,16 @@ end
 # Fallback: empty NamedTuple (e.g. @NamedTuple{} or @Kwargs{}) is non-differentiable.
 Mooncake.@foldable tangent_type(::Type{<:NamedTuple{names,Tuple{}}}) where {names} = NoTangent
 
+# -----------------------------------------------------------------------------
+# Length-1 tuple of Nullable expression nodes
+# -----------------------------------------------------------------------------
+Mooncake.@foldable function Mooncake.tangent_type(
+    ::Type{Tuple{Nullable{N}}}
+) where {T,D,N<:AbstractExpressionNode{T,D}}
+    Tv = Mooncake.tangent_type(T)
+    Tv === NoTangent && return NoTangent
+    NT = @NamedTuple{null::NoTangent, x::TangentNode{Tv,D}}
+    return Tuple{NT}
+end
+
 end
