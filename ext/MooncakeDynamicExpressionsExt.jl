@@ -34,10 +34,6 @@ function TangentNode{Tv,D}(
     )
 end
 
-function Mooncake.tangent_type(::Type{<:TangentNode{Tv,D}}) where {Tv,D}
-    return TangentNode{Tv,D}
-end
-
 function Mooncake.tangent_type(
     ::Type{<:DE.UtilsModule.Nullable{<:DE.AbstractExpressionNode{T,D}}},
 ) where {T,D}
@@ -52,7 +48,9 @@ function Mooncake.tangent_type(::Type{<:AbstractExpressionNode{T,D}}) where {T,D
     Tv = Mooncake.tangent_type(T)
     return Tv === NoTangent ? NoTangent : TangentNode{Tv,D}
 end
-
+function Mooncake.tangent_type(::Type{TangentNode{Tv,D}}) where {Tv,D}
+    return TangentNode{Tv,D}
+end
 function Mooncake.tangent_type(
     ::Type{TangentNode{Tv,D}}, ::Type{Mooncake.NoRData}
 ) where {Tv,D}
@@ -353,29 +351,9 @@ struct Pullback{T,field_sym,n_args}
 end
 function (pb::Pullback{T,field_sym,n_args})(Δy_rdata) where {T,field_sym,n_args}
     if field_sym === :val && !(Δy_rdata isa Mooncake.NoRData)
-        if pb.pt.val isa Mooncake.NoTangent
-            pb.pt.val = Mooncake.rdata_to_tangent(Δy_rdata)
-        else
-            pb.pt.val = Mooncake.increment_rdata!!(pb.pt.val, Δy_rdata)
-        end
+        pb.pt.val = Mooncake.increment_rdata!!(pb.pt.val, Δy_rdata)
     end
     return ntuple(_ -> Mooncake.NoRData(), Val(n_args))
-end
-
-@generated function _map_children_fdata(primal_children::P, tangent_children::T) where {P<:Tuple,T<:Tuple}
-    N = length(P.parameters)
-    exprs = map(1:N) do i
-        quote
-            let child_p = primal_children[$i], child_t = tangent_children[$i]
-                if child_t isa Mooncake.NoTangent
-                    Mooncake.uninit_fdata(child_p)
-                else
-                    Mooncake.fdata(child_t)
-                end
-            end
-        end
-    end
-    return Expr(:tuple, exprs...)
 end
 
 function _rrule_getfield_common(
@@ -389,7 +367,13 @@ function _rrule_getfield_common(
     fdata_for_output = if field_sym === :val
         Mooncake.fdata(pt.val)
     elseif field_sym === :children
-        _map_children_fdata(value_primal, pt.children)
+        map(value_primal, pt.children) do child_p, child_t
+            if child_t isa Mooncake.NoTangent
+                Mooncake.uninit_fdata(child_p)
+            else
+                Mooncake.FData(Mooncake.fdata(child_t))
+            end
+        end
     else
         Mooncake.NoFData()
     end
