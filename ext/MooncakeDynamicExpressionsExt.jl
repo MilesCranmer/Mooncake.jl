@@ -362,14 +362,22 @@ function _rrule_getfield_common(
         Mooncake.fdata(pt.val)
     elseif field_sym === :children
         Cu = _child_union_type(Tv, Val(D))
-        raw = map(value_primal, pt.children) do _, child_t
+        ntuple(Val(D)) do idx
+            child_t = pt.children[idx]
             if child_t isa Mooncake.NoTangent
-                ChildRData{Tv,D}(Mooncake.NoFData())
+                # Runtime value is NoFData, but include dead branch so
+                # compile-time inference sees the NamedTuple variant too.
+                (
+                    false ? (; null = Mooncake.NoFData(), x = TangentNode{Tv,D}(NoTangent()))
+                          : Mooncake.NoFData()
+                )::Cu
             else
-                ChildRData{Tv,D}((; null = Mooncake.NoFData(), x = _deep_unwrap_nullable(child_t)))
+                (
+                    false ? Mooncake.NoFData()
+                          : (; null = Mooncake.NoFData(), x = _deep_unwrap_nullable(child_t))
+                )::Cu
             end
         end
-        convert(NTuple{D,Cu}, raw)
     else
         Mooncake.NoFData()
     end
@@ -508,24 +516,12 @@ end
 # Helper for children rdata element type
 ################################################################################
 
-# Concrete wrapper whose field has the exact union type demanded by the tests
-struct ChildRData{Tv,D}
-    data::Union{
-        Mooncake.NoFData,
-        NamedTuple{(:null,:x),Tuple{Mooncake.NoFData,TangentNode{Tv,D}}}
-    }
-end
-
-Mooncake.fdata(c::ChildRData) = c.data
-Mooncake.rdata(::ChildRData) = Mooncake.NoRData()
-
-# Tell tests how to compare two ChildRData values
-Mooncake.TestUtils.has_equal_data_internal(x::ChildRData, y::ChildRData, equndef::Bool, d::Dict{Tuple{UInt,UInt},Bool}) =
-    Mooncake.TestUtils.has_equal_data_internal(x.data, y.data, equndef, d)
-
-# Alias generator for convenience
+# Union element type expected by the DynamicExpressions tests
+#   Union{NoFData,
+#         @NamedTuple{null::NoFData,
+#                     x::TangentNode{Tv,D}}}
 @generated function _child_union_type(::Type{Tv}, ::Val{D}) where {Tv,D}
-    return :(ChildRData{$Tv,$D})
+    return :(Union{Mooncake.NoFData, NamedTuple{(:null,:x),Tuple{Mooncake.NoFData,TangentNode{$Tv,$D}}}})
 end
 
 end
