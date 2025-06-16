@@ -34,6 +34,10 @@ function TangentNode{Tv,D}(
     )
 end
 
+function Mooncake.tangent_type(::Type{<:TangentNode{Tv,D}}) where {Tv,D}
+    return TangentNode{Tv,D}
+end
+
 function Mooncake.tangent_type(
     ::Type{<:DE.UtilsModule.Nullable{<:DE.AbstractExpressionNode{T,D}}},
 ) where {T,D}
@@ -47,9 +51,6 @@ end
 function Mooncake.tangent_type(::Type{<:AbstractExpressionNode{T,D}}) where {T,D}
     Tv = Mooncake.tangent_type(T)
     return Tv === NoTangent ? NoTangent : TangentNode{Tv,D}
-end
-function Mooncake.tangent_type(::Type{TangentNode{Tv,D}}) where {Tv,D}
-    return TangentNode{Tv,D}
 end
 function Mooncake.tangent_type(
     ::Type{TangentNode{Tv,D}}, ::Type{Mooncake.NoRData}
@@ -351,7 +352,11 @@ struct Pullback{T,field_sym,n_args}
 end
 function (pb::Pullback{T,field_sym,n_args})(Δy_rdata) where {T,field_sym,n_args}
     if field_sym === :val && !(Δy_rdata isa Mooncake.NoRData)
-        pb.pt.val = Mooncake.increment_rdata!!(pb.pt.val, Δy_rdata)
+        if pb.pt.val isa Mooncake.NoTangent
+            pb.pt.val = Mooncake.rdata_to_tangent(Δy_rdata)
+        else
+            pb.pt.val = Mooncake.increment_rdata!!(pb.pt.val, Δy_rdata)
+        end
     end
     return ntuple(_ -> Mooncake.NoRData(), Val(n_args))
 end
@@ -367,13 +372,13 @@ function _rrule_getfield_common(
     fdata_for_output = if field_sym === :val
         Mooncake.fdata(pt.val)
     elseif field_sym === :children
-        map(value_primal, pt.children) do child_p, child_t
-            if child_t isa Mooncake.NoTangent
+        fdata_tuple =
+            Any[if child_t isa Mooncake.NoTangent
                 Mooncake.uninit_fdata(child_p)
             else
-                Mooncake.FData(Mooncake.fdata(child_t))
-            end
-        end
+                Mooncake.fdata(child_t)
+            end for (child_p, child_t) in zip(value_primal, pt.children)]
+        tuple(fdata_tuple...)
     else
         Mooncake.NoFData()
     end
