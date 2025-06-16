@@ -39,7 +39,7 @@ function Mooncake.tangent_type(::Type{<:AbstractExpressionNode{T,D}}) where {T,D
     return Tv === NoTangent ? NoTangent : TangentNode{Tv,D}
 end
 function Mooncake.tangent_type(
-    ::Type{<:DE.Nullable{<:DE.AbstractExpressionNode{T,D}}},
+    ::Type{<:DE.UtilsModule.Nullable{<:DE.AbstractExpressionNode{T,D}}},
 ) where {T,D}
     Tv = Mooncake.tangent_type(T)
     if Tv === NoTangent
@@ -310,7 +310,7 @@ end
             if p.constant
                 TangentNode{Tv,D}(Mooncake._diff_internal(c, p.val, q.val))
             else
-                NoTangent()
+                TangentNode{Tv,D}(NoTangent())
             end
         else
             Base.Cartesian.@nif(
