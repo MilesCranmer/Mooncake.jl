@@ -358,18 +358,19 @@ function _rrule_getfield_common(
 
     value_primal = getfield(p, field_sym)
 
-    begin
-        const ChildUnion{Tv,D} = Union{
-            Mooncake.NoFData,
-            NamedTuple{(:null,:x),Tuple{Mooncake.NoFData,TangentNode{Tv,D}}}
-        }
+    if field_sym === :val
+        Mooncake.fdata(pt.val)
+    elseif field_sym === :children
+        Cu = _child_union_type(Tv, Val(D))
         map(value_primal, pt.children) do _, child_t
             if child_t isa Mooncake.NoTangent
-                ChildUnion{Tv,D}(Mooncake.NoFData())
+                convert(Cu, Mooncake.NoFData())
             else
-                ChildUnion{Tv,D}((; null=Mooncake.NoFData(), x=child_t))
+                convert(Cu, (; null = Mooncake.NoFData(), x = child_t))
             end
         end
+    else
+        Mooncake.NoFData()
     end
 
     y_cd = Mooncake.CoDual(value_primal, fdata_for_output)
@@ -500,6 +501,15 @@ function _deep_unwrap_nullable(c)
         c = c.x
     end
     return c
+end
+
+################################################################################
+# Helper for children rdata element type
+################################################################################
+
+# Return `Union{NoFData, NamedTuple{(:null,:x), (NoFData, TangentNode{Tv,D})}}`
+@generated function _child_union_type(::Type{Tv}, ::Val{D}) where {Tv,D}
+    return :(Union{Mooncake.NoFData, NamedTuple{(:null,:x),Tuple{Mooncake.NoFData,TangentNode{$Tv,$D}}}})
 end
 
 end
