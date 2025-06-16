@@ -1,0 +1,434 @@
+        - # The purpose of the code in this file is to provide a work-around for the Julia compiler
+        - # bug discussed in https://github.com/chalk-lab/Mooncake.jl/issues/319 . You do not need to
+        - # understand it in order to understand Mooncake. I (Will) would recommend against spending
+        - # any time at all reading / understanding this file unless you are actively working on this
+        - # issue, and find it useful.
+        - #
+        - # As soon as patch versions of Julia (both LTS and Release) are made which contain a fix for
+        - # the bug underlying the above issue, this code can and should be removed, and the minimum
+        - # versions of Julia which Mooncake supports bumped.
+        - #
+        - # The only place in which this code seeps into Mooncake.jl code is in Mooncake.optimise_ir!,
+        - # located in src/interpreter/ir_utils.jl . In particular, we replace the `local_interp`
+        - # variable with the `AbstractInterpreter`.
+        - #
+        - # The work around:
+        - # We define a new `AbstractInterpreter` which wraps around the `Compiler.NativeInterpreter`.
+        - # This makes it possible to add methods to various functions in `Compiler`, thereby enabling
+        - # us to insert the bug fixes.
+        - 
+        - struct BugPatchInterpreter <: CC.AbstractInterpreter
+        -     interp::CC.NativeInterpreter
+        4     BugPatchInterpreter() = new(CC.NativeInterpreter())
+        - end
+        - 
+    13535 CC.InferenceParams(ip::BugPatchInterpreter) = CC.InferenceParams(ip.interp)
+     8091 CC.OptimizationParams(ip::BugPatchInterpreter) = CC.OptimizationParams(ip.interp)
+      884 CC.get_inference_cache(ip::BugPatchInterpreter) = CC.get_inference_cache(ip.interp)
+     5850 CC.code_cache(ip::BugPatchInterpreter) = CC.code_cache(ip.interp)
+        - function CC.get(wvc::CC.WorldView{BugPatchInterpreter}, mi::Core.MethodInstance, default)
+        -     return get(wvc.cache.dict, mi, default)
+        - end
+        - function CC.getindex(wvc::CC.WorldView{BugPatchInterpreter}, mi::Core.MethodInstance)
+        -     return getindex(wvc.cache.dict, mi)
+        - end
+        - function CC.haskey(wvc::CC.WorldView{BugPatchInterpreter}, mi::Core.MethodInstance)
+        -     return haskey(wvc.cache.dict, mi)
+        - end
+        - function CC.setindex!(
+        -     wvc::CC.WorldView{BugPatchInterpreter}, ci::Core.CodeInstance, mi::Core.MethodInstance
+        - )
+        -     return setindex!(wvc.cache.dict, ci, mi)
+        - end
+     2272 CC.method_table(ip::BugPatchInterpreter) = CC.method_table(ip.interp)
+        - 
+        - @static if VERSION < v"1.11.0"
+        -     CC.get_world_counter(ip::BugPatchInterpreter) = CC.get_world_counter(ip.interp)
+        - else
+     1790     CC.get_inference_world(ip::BugPatchInterpreter) = CC.get_inference_world(ip.interp)
+        -     CC.cache_owner(ip::BugPatchInterpreter) = CC.cache_owner(ip.interp)
+        - end
+        - 
+        - # You can't write for n in thing_from_compiler unless `Base.iterate(thing_from_compiler)`
+        - # is implemented. Sadly, it's usually the case that `Compiler.iterate(thing_from_compiler)`
+        - # is implemented, but not the function from `Base.` This is convenience functionality to
+        - # ensure that we don't have to write everything out manually each time iteration over
+        - # something from the Compiler is encountered.
+    18945 function core_iterate(f, iterator)
+    26637     it = CC.iterate(iterator)
+    38476     while it !== nothing
+        0         val, state = it
+    19531         f(val)
+    31370         it = CC.iterate(iterator, state)
+    19531     end
+        - end
+        - 
+        - @static if VERSION >= v"1.11"
+        - 
+        -     # Original contains bugs. Apply patch from Jules Merck.
+        0     function patched_populate_def_use_map!(
+        -         tpdum::CC.TwoPhaseDefUseMap, scanner::CC.BBScanner
+        -     )
+        0         CC.scan!(scanner, false) do inst::CC.Instruction, lstmt::Int, bb::Int
+        -             core_iterate(CC.userefs(inst[:stmt])) do ur # replace inst with inst[:stmt]
+        -                 val = CC.getindex(ur)
+        -                 if isa(val, SSAValue)
+        -                     CC.push!(CC.getindex(tpdum, val.id), inst.idx)
+        -                 end
+        -             end
+        -             return true
+        -         end
+        -     end
+        - 
+        -     # Calls populate_def_use_map! -- see above.
+      178     function CC._ir_abstract_constant_propagation(
+        -         interp::BugPatchInterpreter,
+        -         irsv::CC.IRInterpretationState;
+        -         externally_refined::Union{Nothing,BitSet}=nothing,
+        -     )
+       89         (; ir, tpdum, ssa_refined) = irsv
+        - 
+       89         @assert CC.isempty(ir.new_nodes) "IRCode should be compacted before irinterp"
+        - 
+       89         all_rets = Int[]
+       89         scanner = CC.BBScanner(ir)
+        - 
+       89         function check_ret!(@nospecialize(stmt), idx::Int)
+      743             return isa(stmt, ReturnNode) && isdefined(stmt, :val) && push!(all_rets, idx)
+        -         end
+        - 
+        -         # Fast path: Scan both use counts and refinement in one single pass of
+        -         #            of the instructions. In the absence of backedges, this will
+        -         #            converge.
+       89         completed_scan =
+        -             CC.scan!(scanner, true) do inst::CC.Instruction, lstmt::Int, bb::Int
+      742                 idx = inst.idx
+      742                 irsv.curridx = idx
+      742                 stmt = inst[:stmt]
+      742                 typ = inst[:type]
+      742                 flag = inst[:flag]
+      742                 any_refined = false
+      742                 if CC.has_flag(flag, CC.IR_FLAG_REFINED)
+      401                     any_refined = true
+      401                     CC.sub_flag!(inst, CC.IR_FLAG_REFINED)
+      341                 elseif CC.is_all_const_call(stmt, interp, irsv)
+        -                     # force reinference on calls with all constant arguments
+       18                     any_refined = true
+        -                 end
+      930                 core_iterate(CC.userefs(stmt)) do ur
+     1677                     val = CC.getindex(ur)
+     1677                     if isa(val, Argument)
+      234                         any_refined |= irsv.argtypes_refined[val.n]
+     1443                     elseif isa(val, SSAValue)
+      504                         any_refined |= CC.in(val.id, ssa_refined)
+      504                         CC.count!(tpdum, val)
+        -                     end
+        -                 end
+      742                 if isa(stmt, CC.PhiNode) && CC.in(idx, ssa_refined)
+        0                     any_refined = true
+        0                     CC.delete!(ssa_refined, idx)
+        -                 end
+      743                 check_ret!(stmt, idx)
+     1480                 is_terminator_or_phi = (isa(stmt, PhiNode) || CC.isterminator(stmt))
+      742                 if typ === CC.Bottom && !(idx == lstmt && is_terminator_or_phi)
+        1                     return true
+        -                 end
+     1046                 if (
+        -                     any_refined && CC.reprocess_instruction!(interp, inst, idx, bb, irsv)
+        -                 ) || (externally_refined !== nothing && idx in externally_refined)
+      436                     CC.push!(ssa_refined, idx)
+      436                     stmt = inst[:stmt]
+      436                     typ = inst[:type]
+        -                 end
+      741                 if typ === CC.Bottom && !is_terminator_or_phi
+        1                     CC.kill_terminator_edges!(irsv, lstmt, bb)
+        1                     if idx != lstmt
+        1                         for idx2 in ((idx + 1):(lstmt - 1))
+        6                             CC.setindex!(ir, nothing, SSAValue(idx2))
+       11                         end
+        1                         CC.setindex!(ir[SSAValue(lstmt)], ReturnNode(), :stmt)
+        -                     end
+        1                     return false
+        -                 end
+      740                 return true
+        -             end
+        - 
+       89         if !completed_scan
+        -             # Slow path
+        0             stmt_ip = CC.BitSetBoundedMinPrioritySet(length(ir.stmts))
+        - 
+        -             # Slow Path Phase 1.A: Complete use scanning
+        0             CC.scan!(scanner, false) do inst::CC.Instruction, lstmt::Int, bb::Int
+        -                 idx = inst.idx
+        -                 irsv.curridx = idx
+        -                 stmt = inst[:stmt]
+        -                 flag = inst[:flag]
+        -                 if CC.has_flag(flag, CC.IR_FLAG_REFINED)
+        -                     CC.sub_flag!(inst, CC.IR_FLAG_REFINED)
+        -                     CC.push!(stmt_ip, idx)
+        -                 end
+        -                 check_ret!(stmt, idx)
+        -                 core_iterate(CC.userefs(stmt)) do ur
+        -                     val = CC.getindex(ur)
+        -                     if isa(val, Argument)
+        -                         if irsv.argtypes_refined[val.n]
+        -                             CC.push!(stmt_ip, idx)
+        -                         end
+        -                     elseif isa(val, SSAValue)
+        -                         CC.count!(tpdum, val)
+        -                     end
+        -                 end
+        -                 return true
+        -             end
+        - 
+        -             # Slow Path Phase 1.B: Assemble def-use map
+        0             CC.complete!(tpdum)
+        0             CC.push!(scanner.bb_ip, 1)
+        0             patched_populate_def_use_map!(tpdum, scanner)
+        - 
+        -             # Slow Path Phase 2: Use def-use map to converge cycles.
+        -             # TODO: It would be possible to return to the fast path after converging
+        -             #       each cycle, but that's somewhat complicated.
+        0             core_iterate(ssa_refined) do val
+        -                 # for use in CC.getindex(tpdum, val)
+        0                 core_iterate(CC.getindex(tpdum, val)) do use
+        0                     if !CC.in(use, ssa_refined)
+        0                         CC.push!(stmt_ip, use)
+        -                     end
+        -                 end
+        -             end
+        0             while !CC.isempty(stmt_ip)
+        0                 idx = CC.popfirst!(stmt_ip)
+        0                 irsv.curridx = idx
+        0                 inst = ir[SSAValue(idx)]
+        0                 if CC.reprocess_instruction!(interp, inst, idx, nothing, irsv)
+        0                     CC.append!(stmt_ip, CC.getindex(tpdum, idx))
+        -                 end
+        0             end
+        -         end
+        - 
+        0         ultimate_rt = CC.Bottom
+       89         for idx in all_rets
+       97             bb = CC.block_for_inst(ir.cfg, idx)
+       97             if bb != 1 && length(ir.cfg.blocks[bb].preds) == 0
+        -                 # Could have discovered this block is dead after the initial scan
+        0                 continue
+        -             end
+       97             inst = ir[SSAValue(idx)][:stmt]::ReturnNode
+       97             rt = CC.argextype(inst.val, ir)
+       97             ultimate_rt = CC.tmerge(CC.typeinf_lattice(interp), ultimate_rt, rt)
+       97         end
+        - 
+       89         nothrow = noub = true
+       89         for idx in 1:length(ir.stmts)
+      514             if ir[SSAValue(idx)][:stmt] === nothing
+        -                 # skip `nothing` statement, which might be inserted as a dummy node,
+        -                 # e.g. by `finish_current_bb!` without explicitly marking it as `:nothrow`
+        3                 continue
+        -             end
+      511             flag = ir[SSAValue(idx)][:flag]
+      511             nothrow &= CC.has_flag(flag, CC.IR_FLAG_NOTHROW)
+      511             noub &= CC.has_flag(flag, CC.IR_FLAG_NOUB)
+      511             (nothrow | noub) || break
+      935         end
+        - 
+       89         if CC.last(irsv.valid_worlds) >= CC.get_world_counter()
+        -             # if we aren't cached, we don't need this edge
+        -             # but our caller might, so let's just make it anyways
+       89             CC.store_backedges(CC.frame_instance(irsv), irsv.edges)
+        -         end
+        - 
+       89         return Pair{Any,Tuple{Bool,Bool}}(
+        -             CC.maybe_singleton_const(ultimate_rt), (nothrow, noub)
+        -         )
+        -     end
+        - 
+        -     struct ScanStmtPatch
+      798         sv::CC.PostOptAnalysisState
+        -     end
+        - 
+        -     # Original contains bugs.
+    18881     function ((; sv)::ScanStmtPatch)(inst::CC.Instruction, lstmt::Int, bb::Int)
+    18881         stmt = inst[:stmt]
+        - 
+    18881         if isa(stmt, CC.EnterNode)
+        -             # try/catch not yet modeled
+        0             CC.give_up_refinements!(sv)
+        0             return true # don't bail out early -- replaces `nothing` with `true` 
+        -         end
+        - 
+    18881         CC.scan_non_dataflow_flags!(inst, sv)
+        - 
+    18881         stmt_inconsistent = patched_scan_inconsistency!(inst, sv)
+        - 
+    18881         if stmt_inconsistent
+    13313             if !CC.has_flag(inst[:flag], CC.IR_FLAG_NOTHROW)
+        -                 # Taint :consistent if this statement may raise since :consistent requires
+        -                 # consistent termination. TODO: Separate :consistent_return and :consistent_termination from :consistent.
+     9562                 sv.all_retpaths_consistent = false
+        -             end
+    13313             if inst.idx == lstmt
+     1041                 if isa(stmt, ReturnNode) && isdefined(stmt, :val)
+      160                     sv.all_retpaths_consistent = false
+      881                 elseif isa(stmt, GotoIfNot)
+        -                     # Conditional Branch with inconsistent condition.
+        -                     # If we do not know this function terminates, taint consistency, now,
+        -                     # :consistent requires consistent termination. TODO: Just look at the
+        -                     # inconsistent region.
+      477                     if !sv.result.ipo_effects.terminates
+      419                         sv.all_retpaths_consistent = false
+       58                     elseif CC.visit_conditional_successors(
+        -                         sv.lazypostdomtree, sv.ir, bb
+        -                     ) do succ::Int
+      253                         return CC.any_stmt_may_throw(sv.ir, succ)
+        -                     end
+        -                         # check if this `GotoIfNot` leads to conditional throws, which taints consistency
+       55                         sv.all_retpaths_consistent = false
+        -                     else
+        3                         (; cfg, domtree) = CC.get!(sv.lazyagdomtree)
+        3                         for succ in CC.iterated_dominance_frontier(
+        -                             cfg,
+        -                             CC.BlockLiveness(sv.ir.cfg.blocks[bb].succs, nothing),
+        -                             domtree,
+        -                         )
+        3                             if succ == CC.length(cfg.blocks)
+        -                                 # Phi node in the virtual exit -> We have a conditional
+        -                                 # return. TODO: Check if all the retvals are egal.
+        0                                 sv.all_retpaths_consistent = false
+        -                             else
+        3                                 CC.visit_bb_phis!(sv.ir, succ) do phiidx::Int
+        3                                     CC.push!(sv.inconsistent, phiidx)
+        -                                 end
+        -                             end
+        3                         end
+        -                     end
+        -                 end
+        -             end
+        -         end
+        - 
+        -         # Do not bail out early, as this can cause tpdum counts to be off.
+        -         # # bail out early if there are no possibilities to refine the effects
+        -         # if !any_refinable(sv)
+        -         #     return nothing
+        -         # end
+        - 
+    18881         return true
+        -     end
+        - 
+        -     # Original contains bug.
+    18881     function patched_scan_inconsistency!(inst::CC.Instruction, sv::CC.PostOptAnalysisState)
+    18881         flag = inst[:flag]
+    18881         stmt_inconsistent = !CC.has_flag(flag, CC.IR_FLAG_CONSISTENT)
+    18881         stmt = inst[:stmt]
+        -         # Special case: For `getfield` and memory operations, we allow inconsistency of the :boundscheck argument
+    18881         (; inconsistent, tpdum) = sv
+    24069         if CC.iscall_with_boundscheck(stmt, sv)
+      678             for i in 1:length(stmt.args) # explore all args -- don't assume boundscheck is not an SSA
+     2712                 val = stmt.args[i]
+     2712                 if isa(val, SSAValue)
+     1328                     stmt_inconsistent |= CC.in(val.id, inconsistent)
+     1328                     CC.count!(tpdum, val)
+        -                 end
+     4746             end
+        -         else
+    18203             core_iterate(CC.userefs(stmt)) do ur
+    17854                 val = CC.getindex(ur)
+    17854                 if isa(val, SSAValue)
+     5997                     stmt_inconsistent |= CC.in(val.id, inconsistent)
+     5997                     CC.count!(tpdum, val)
+        -                 end
+        -             end
+        -         end
+    18881         stmt_inconsistent && CC.push!(inconsistent, inst.idx)
+    18881         return stmt_inconsistent
+        -     end
+        - 
+        -     # Calls check_inconsistentcy! -- see below.
+      809     function CC.ipo_dataflow_analysis!(
+        -         interp::BugPatchInterpreter, ir::CC.IRCode, result::CC.InferenceResult
+        -     )
+      809         if !CC.is_ipo_dataflow_analysis_profitable(result.ipo_effects)
+       11             return false
+        -         end
+        - 
+      798         @assert CC.isempty(ir.new_nodes) "IRCode should be compacted before post-opt analysis"
+        - 
+      798         sv = CC.PostOptAnalysisState(result, ir)
+      798         scanner = CC.BBScanner(ir)
+        - 
+      798         completed_scan = CC.scan!(ScanStmtPatch(sv), scanner, true)
+        - 
+      798         if !completed_scan
+       44             if sv.all_retpaths_consistent
+        0                 patched_check_inconsistentcy!(sv, scanner)
+        -             else
+        -                 # No longer any dataflow concerns, just scan the flags
+       44                 CC.scan!(scanner, false) do inst::CC.Instruction, lstmt::Int, bb::Int
+       44                     CC.scan_non_dataflow_flags!(inst, sv)
+        -                     # bail out early if there are no possibilities to refine the effects
+       44                     if !CC.any_refinable(sv)
+       44                         return nothing
+        -                     end
+        0                     return true
+        -                 end
+        -             end
+        -         end
+        - 
+      798         return CC.refine_effects!(interp, sv)
+        -     end
+        - 
+        -     # Calls populate_def_use_map! -- see above.
+        0     function patched_check_inconsistentcy!(
+        -         sv::CC.PostOptAnalysisState, scanner::CC.BBScanner
+        -     )
+        0         (; ir, inconsistent, tpdum) = sv
+        - 
+        0         CC.scan!(ScanStmtPatch(sv), scanner, false)
+        0         CC.complete!(tpdum)
+        0         CC.push!(scanner.bb_ip, 1)
+        0         patched_populate_def_use_map!(tpdum, scanner)
+        - 
+        0         stmt_ip = CC.BitSetBoundedMinPrioritySet(length(ir.stmts))
+        0         core_iterate(inconsistent) do def
+        0             core_iterate(CC.getindex(tpdum, def)) do use
+        0                 if !CC.in(use, inconsistent)
+        0                     CC.push!(inconsistent, use)
+        0                     CC.append!(stmt_ip, CC.getindex(tpdum, use))
+        -                 end
+        -             end
+        -         end
+        0         lazydomtree = CC.LazyDomtree(ir)
+        0         while !CC.isempty(stmt_ip)
+        0             idx = CC.popfirst!(stmt_ip)
+        0             inst = ir[SSAValue(idx)]
+        0             stmt = inst[:stmt]
+        0             if CC.iscall_with_boundscheck(stmt, sv)
+        0                 any_non_boundscheck_inconsistent = false
+        0                 for i in 1:(length(stmt.args) - 1)
+        0                     val = stmt.args[i]
+        0                     if isa(val, SSAValue)
+        0                         any_non_boundscheck_inconsistent |= val.id in inconsistent
+        0                         any_non_boundscheck_inconsistent && break
+        -                     end
+        0                 end
+        0                 any_non_boundscheck_inconsistent || continue
+        0             elseif isa(stmt, ReturnNode)
+        0                 sv.all_retpaths_consistent = false
+        0             elseif isa(stmt, GotoIfNot)
+        0                 bb = CC.block_for_inst(ir, idx)
+        0                 cfg = ir.cfg
+        0                 blockliveness = CC.BlockLiveness(cfg.blocks[bb].succs, nothing)
+        0                 for succ in
+        -                     CC.iterated_dominance_frontier(cfg, blockliveness, get!(lazydomtree))
+        0                     CC.visit_bb_phis!(ir, succ) do phiidx::Int
+        -                         push!(inconsistent, phiidx)
+        -                         push!(stmt_ip, phiidx)
+        -                     end
+        0                 end
+        -             end
+        0             sv.all_retpaths_consistent || break
+        0             CC.append!(inconsistent, tpdum[idx])
+        0             CC.append!(stmt_ip, tpdum[idx])
+        0         end
+        -     end
+        - end

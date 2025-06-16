@@ -1,0 +1,270 @@
+        - """
+        -     stmt(ir::CC.InstructionStream)
+        - 
+        - Get the field containing the instructions in `ir`. This changed name in 1.11 from `inst` to
+        - `stmt`.
+        - """
+  1737198 stmt(ir::CC.InstructionStream) = @static VERSION < v"1.11.0-rc4" ? ir.inst : ir.stmt
+        - 
+        - """
+        -     ircode(
+        -         inst::Vector{Any},
+        -         argtypes::Vector{Any},
+        -         sptypes::Vector{CC.VarState}=CC.VarState[],
+        -     ) -> IRCode
+        - 
+        - Constructs an instance of an `IRCode`. This is useful for constructing test cases with known
+        - properties.
+        - 
+        - No optimisations or type inference are performed on the resulting `IRCode`, so that
+        - the `IRCode` contains exactly what is intended by the caller. Please make use of
+        - `infer_types!` if you require the types to be inferred.
+        - 
+        - Edges in `PhiNode`s, `GotoIfNot`s, and `GotoNode`s found in `inst` must refer to lines (as
+        - in `CodeInfo`). In the `IRCode` returned by this function, these line references are
+        - translated into block references.
+        - """
+        - function ircode(
+        -     insts::Vector{Any}, argtypes::Vector{Any}, sptypes::Vector{CC.VarState}=CC.VarState[]
+        - )
+        -     cfg = CC.compute_basic_blocks(insts)
+        -     insts = __line_numbers_to_block_numbers!(insts, cfg)
+        -     stmts = __insts_to_instruction_stream(insts)
+        -     linetable = [CC.LineInfoNode(Mooncake, :ircode, :ir_utils, Int32(1), Int32(0))]
+        -     meta = Expr[]
+        -     return CC.IRCode(stmts, cfg, linetable, argtypes, meta, CC.VarState[])
+        - end
+        - 
+        - """
+        -     __insts_to_instruction_stream(insts::Vector{Any})
+        - 
+        - Produces an instruction stream whose
+        - - `stmt` (v1.11 and up) / `inst` (v1.10) field is `insts`,
+        - - `type` field is all `Any`,
+        - - `info` field is all `Core.Compiler.NoCallInfo`,
+        - - `line` field is all `Int32(1)`, and
+        - - `flag` field is all `Core.Compiler.IR_FLAG_REFINED`.
+        - 
+        - As such, if you wish to ensure that your `IRCode` prints nicely, you should ensure that its
+        - linetable field has at least one element.
+        - """
+        - function __insts_to_instruction_stream(insts::Vector{Any})
+        -     return CC.InstructionStream(
+        -         insts,
+        -         fill(Any, length(insts)),
+        -         fill(CC.NoCallInfo(), length(insts)),
+        -         fill(Int32(1), length(insts)),
+        -         fill(CC.IR_FLAG_REFINED, length(insts)),
+        -     )
+        - end
+        - 
+        - """
+        -     infer_ir!(ir::IRCode) -> IRCode
+        - 
+        - Runs type inference on `ir`, which mutates `ir`, and returns it.
+        - 
+        - Note: the compiler will not infer the types of anything where the corrsponding element of
+        - `ir.stmts.flag` is not set to `Core.Compiler.IR_FLAG_REFINED`. Nor will it attempt to refine
+        - the type of the value returned by a `:invoke` expressions. Consequently, if you find that
+        - the types in your IR are not being refined, you may wish to check that neither of these
+        - things are happening.
+        - """
+        - function infer_ir!(ir::IRCode)
+        -     return __infer_ir!(ir, CC.NativeInterpreter(), __get_toplevel_mi_from_ir(ir, Mooncake))
+        - end
+        - 
+        - # Given some IR, generates a MethodInstance suitable for passing to infer_ir!, if you don't
+        - # already have one with the right argument types. Credit to @oxinabox:
+        - # https://gist.github.com/oxinabox/cdcffc1392f91a2f6d80b2524726d802#file-example-jl-L54
+       78 function __get_toplevel_mi_from_ir(ir, _module::Module)
+       78     mi = ccall(:jl_new_method_instance_uninit, Ref{Core.MethodInstance}, ())
+       78     mi.specTypes = Tuple{map(CC.widenconst, ir.argtypes)...}
+       78     mi.def = _module
+       78     return mi
+        - end
+        - 
+        - # Run type inference and constant propagation on the ir. Credit to @oxinabox:
+        - # https://gist.github.com/oxinabox/cdcffc1392f91a2f6d80b2524726d802#file-example-jl-L54
+       78 function __infer_ir!(ir, interp::CC.AbstractInterpreter, mi::CC.MethodInstance)
+       78     method_info = CC.MethodInfo(true, nothing)#=propagate_inbounds=#
+       78     min_world = world = get_inference_world(interp)
+       78     max_world = Base.get_world_counter()
+       78     irsv = CC.IRInterpretationState(
+        -         interp, method_info, ir, mi, ir.argtypes, world, min_world, max_world
+        -     )
+       78     rt = CC._ir_abstract_constant_propagation(interp, irsv)
+       78     return ir
+        - end
+        - 
+        - # In automatically generated code, it is meaningless to include code coverage effects.
+        - # Moreover, it seems to cause some serious inference probems. Consequently, it makes sense
+        - # to remove such effects before optimising IRCode.
+      156 function __strip_coverage!(ir::IRCode)
+      156     for n in eachindex(stmt(ir.stmts))
+   998931         if Meta.isexpr(stmt(ir.stmts)[n], :code_coverage_effect)
+   665115             stmt(ir.stmts)[n] = nothing
+        -         end
+  1997706     end
+      156     return ir
+        - end
+        - 
+        - """
+        -     optimise_ir!(ir::IRCode, show_ir=false)
+        - 
+        - Run a fairly standard optimisation pass on `ir`. If `show_ir` is `true`, displays the IR
+        - to `stdout` at various points in the pipeline -- this is sometimes useful for debugging.
+        - """
+      156 function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true)
+       78     if show_ir
+        0         println("Pre-optimization")
+        0         display(ir)
+        0         println()
+        -     end
+       78     CC.verify_ir(ir)
+   157120     ir = __strip_coverage!(ir)
+       78     ir = CC.compact!(ir)
+        -     # local_interp = CC.NativeInterpreter()
+       78     local_interp = BugPatchInterpreter() # 319 -- see patch_for_319.jl for context
+       78     mi = __get_toplevel_mi_from_ir(ir, @__MODULE__)
+       78     ir = __infer_ir!(ir, local_interp, mi)
+       78     if show_ir
+        0         println("Post-inference")
+        0         display(ir)
+        0         println()
+        -     end
+       78     inline_state = CC.InliningState(local_interp)
+       78     CC.verify_ir(ir)
+       78     if do_inline
+      156         ir = CC.ssa_inlining_pass!(ir, inline_state, true)#=propagate_inbounds=#
+       78         ir = CC.compact!(ir)
+        -     end
+   841811     ir = __strip_coverage!(ir)
+       78     ir = CC.sroa_pass!(ir, inline_state)
+        - 
+        0     @static if VERSION < v"1.11-"
+        -         ir = CC.adce_pass!(ir, inline_state)
+        -     else
+       78         ir, _ = CC.adce_pass!(ir, inline_state)
+        -     end
+        - 
+       78     ir = CC.compact!(ir)
+        -     # CC.verify_ir(ir, true, false, CC.optimizer_lattice(local_interp))
+       78     CC.verify_linetable(ir.linetable, true)
+       78     if show_ir
+        0         println("Post-optimization")
+        0         display(ir)
+        0         println()
+        -     end
+       78     return ir
+        - end
+        - 
+        - # Handles difference between 1.10 and 1.11.
+        - get_matches(x::CC.MethodLookupResult) = x.matches
+        3 get_matches(x::Vector{Any}) = x
+        - 
+        - """
+        -     lookup_ir(
+        -         interp::AbstractInterpreter,
+        -         sig_or_mi::Union{Type{<:Tuple}, Core.MethodInstance},
+        -     )::Tuple{IRCode, T}
+        - 
+        - Get the unique IR associated to `sig_or_mi` under `interp`. Throws `ArgumentError`s if
+        - there is no code found, or if more than one `IRCode` instance returned.
+        - 
+        - Returns a tuple containing the `IRCode` and its return type.
+        - """
+        6 function lookup_ir(
+        -     interp::CC.AbstractInterpreter, tt::Type{<:Tuple}; optimize_until=nothing
+        - )
+        6     matches = CC.findall(tt, CC.method_table(interp))
+        3     asts = []
+        3     for match in get_matches(matches.matches)
+        3         match = match::Core.MethodMatch
+        0         @static if VERSION < v"1.11-"
+        -             meth = Base.func_for_method_checked(match.method, tt, match.sparams)
+        -             (code, ty) = CC.typeinf_ircode(
+        -                 interp, meth, match.spec_types, match.sparams, optimize_until
+        -             )
+        -         else
+        3             (code, ty) = Core.Compiler.typeinf_ircode(interp, match, optimize_until)
+        -         end
+        3         if code === nothing
+        0             push!(asts, match.method => Any)
+        -         else
+        3             push!(asts, code => ty)
+        -         end
+        3     end
+        3     if isempty(asts)
+        0         msg =
+        -             "No methods found for signature: $tt.\n" *
+        -             "\n" *
+        -             "This is often caused by accidentally trying to get Mooncake.jl to " *
+        -             "differentiate a call (directly or indirectly) which does not exist. For " *
+        -             "example, defining\n" *
+        -             "\n" *
+        -             "f(x::Float64) = sin(x)\n" *
+        -             "build_rrule(Tuple{typeof(f), Int})\n" *
+        -             "\n" *
+        -             "would cause this error, because there are no methods of `f` which accept " *
+        -             "an `Int` argument."
+        0         throw(ArgumentError(msg))
+        3     elseif length(asts) > 1
+        0         throw(ArgumentError("More than one method found for signature $tt."))
+        -     end
+        3     return only(asts)
+        - end
+        - 
+      442 function lookup_ir(
+        -     interp::CC.AbstractInterpreter, mi::Core.MethodInstance; optimize_until=nothing
+        - )
+      221     return CC.typeinf_ircode(interp, mi.def, mi.specTypes, mi.sparam_vals, optimize_until)
+        - end
+        - 
+        - """
+        -     is_unreachable_return_node(x::ReturnNode)
+        - 
+        - Determine whehter `x` is a `ReturnNode`, and if it is, if it is also unreachable. This is
+        - purely a function of whether or not its `val` field is defined or not.
+        - """
+      597 is_unreachable_return_node(x::ReturnNode) = !isdefined(x, :val)
+        - is_unreachable_return_node(x) = false
+        - 
+        - """
+        -     UnhandledLanguageFeatureException(message::String)
+        - 
+        - An exception used to indicate that some aspect of the Julia language which AD cannot handle
+        - has been encountered.
+        - """
+        - struct UnhandledLanguageFeatureException <: Exception
+        -     msg::String
+        - end
+        - 
+        - """
+        -     unhandled_feature(msg::String)
+        - 
+        - Throw an `UnhandledLanguageFeatureException` with message `msg`.
+        - """
+        0 unhandled_feature(msg::String) = throw(UnhandledLanguageFeatureException(msg))
+        - 
+        - """
+        -     replace_uses_with!(stmt, def::Union{Argument, SSAValue}, val)
+        - 
+        - Replace all uses of `def` with `val` in the single statement `stmt`.
+        - Note: this function is highly incomplete, really only working correctly for a specific
+        - function in `ir_normalisation.jl`. You probably do not want to use it.
+        - """
+  1879261 function replace_uses_with!(stmt, def::Union{Argument,SSAValue}, val)
+  1879261     if stmt isa Expr
+  1653216         stmt.args = Any[arg == def ? val : arg for arg in stmt.args]
+  1653216         return stmt
+   226045     elseif stmt isa GotoIfNot
+   131060         if stmt.cond == def
+      181             @assert val isa Bool
+      181             return GotoIfNot(val, stmt.dest)
+        -         else
+    65349             return stmt
+        -         end
+        -     else
+   160515         return stmt
+        -     end
+        - end

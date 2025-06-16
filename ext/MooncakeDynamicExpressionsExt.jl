@@ -38,6 +38,15 @@ function Mooncake.tangent_type(::Type{<:AbstractExpressionNode{T,D}}) where {T,D
     Tv = Mooncake.tangent_type(T)
     return Tv === NoTangent ? NoTangent : TangentNode{Tv,D}
 end
+function Mooncake.tangent_type(
+    ::Type{<:DE.Nullable{<:DE.AbstractExpressionNode{T,D}}},
+) where {T,D}
+    Tv = Mooncake.tangent_type(T)
+    if Tv === NoTangent
+        return NoTangent
+    end
+    return Union{@NamedTuple{null::NoTangent,x::TangentNode{Tv,D}},NoTangent}
+end
 function Mooncake.tangent_type(::Type{TangentNode{Tv,D}}) where {Tv,D}
     return TangentNode{Tv,D}
 end

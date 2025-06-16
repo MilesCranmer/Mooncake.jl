@@ -1,0 +1,493 @@
+        - """
+        -     normalise!(ir::IRCode, spnames::Vector{Symbol})
+        - 
+        - Apply a sequence of standardising transformations to `ir` which leaves its semantics
+        - unchanged, but makes AD more straightforward. In particular, replace
+        - 1. `:foreigncall` `Expr`s with `:call`s to `Mooncake._foreigncall_`,
+        - 2. `:new` `Expr`s with `:call`s to `Mooncake._new_`,
+        - 3. `:splatnew` Expr`s with `:call`s to `Mooncake._splat_new_`,
+        - 4. `Core.IntrinsicFunction`s with counterparts from `Mooncake.IntrinsicWrappers`,
+        - 5. `getfield(x, 1)` with `lgetfield(x, Val(1))`, and related transformations,
+        - 6. `memoryrefget` calls to `lmemoryrefget` calls, and related transformations,
+        - 7. `gc_preserve_begin` / `gc_preserve_end` exprs so that memory release is delayed.
+        - 
+        - `spnames` are the names associated to the static parameters of `ir`. These are needed when
+        - handling `:foreigncall` expressions, in which it is not necessarily the case that all
+        - static parameter names have been translated into either types, or `:static_parameter`
+        - expressions.
+        - 
+        - Unfortunately, the static parameter names are not retained in `IRCode`, and the `Method`
+        - from which the `IRCode` is derived must be consulted. `Mooncake.is_vararg_and_sparam_names`
+        - provides a convenient way to do this.
+        - """
+       39 function normalise!(ir::IRCode, spnames::Vector{Symbol})
+       39     sp_map = Dict{Symbol,CC.VarState}(zip(spnames, ir.sptypes))
+       39     ir = interpolate_boundschecks!(ir)
+       39     ir = fix_up_invoke_inference!(ir)
+       39     for (n, inst) in enumerate(stmt(ir.stmts))
+    36329         inst = foreigncall_to_call(inst, sp_map)
+    36329         inst = new_to_call(inst)
+    36329         inst = splatnew_to_call(inst)
+    66511         inst = intrinsic_to_function(inst)
+    36329         inst = lift_getfield_and_others(inst)
+    36329         inst = lift_memoryrefget_and_memoryrefset_builtins(inst)
+    72658         inst = lift_gc_preservation(inst)
+    36329         stmt(ir.stmts)[n] = inst
+    72619     end
+       39     ir = const_prop_gotoifnots!(ir)
+        - 
+        -     # Dynamic error checks. Removing these would be like removing things from the test
+        -     # suite. i.e. do not remove unless you're quite sure that they're redundant.
+       39     CC.verify_ir(ir)
+       39     verify_no_constant_gotoifnots(ir)
+        - 
+       39     return ir
+        - end
+        - 
+        - """
+        -     interpolate_boundschecks!(ir::IRCode)
+        - 
+        - For every `x = Expr(:boundscheck, value)` in `ir`, interpolate `value` into all uses of `x`.
+        - This is only required in order to ensure that literal versions of memoryrefget,
+        - memoryrefset!, getfield, and setfield! work effectively. If they are removed through
+        - improvements to the way that we handle constant propagation inside Mooncake, then this
+        - functionality can be removed.
+        - """
+       39 function interpolate_boundschecks!(ir::IRCode)
+       39     _interpolate_boundschecks!(stmt(ir.stmts))
+       39     return ir
+        - end
+        - 
+       39 function _interpolate_boundschecks!(statements::Vector{Any})
+       39     for (n, stmt) in enumerate(statements)
+    36329         if stmt isa Expr && stmt.head == :boundscheck && length(stmt.args) == 1
+      752             def = SSAValue(n)
+      752             val = only(stmt.args)
+      752             for (m, stmt) in enumerate(statements)
+  1879261                 statements[m] = replace_uses_with!(stmt, def, val)
+  3757770             end
+      752             statements[n] = nothing
+        -         end
+    72619     end
+       39     return nothing
+        - end
+        - 
+        - """
+        -     fix_up_invoke_inference!(ir::IRCode)
+        - 
+        - # The Problem
+        - 
+        - Consider the following:
+        - ```julia
+        - @noinline function bar!(x)
+        -     x .*= 2
+        - end
+        - 
+        - function foo!(x)
+        -     bar!(x)
+        -     return nothing
+        - end
+        - ```
+        - In this case, the IR associated to `Tuple{typeof(foo), Vector{Float64}}` will be something
+        - along the lines of
+        - ```julia
+        - julia> Base.code_ircode_by_type(Tuple{typeof(foo), Vector{Float64}})
+        - 1-element Vector{Any}:
+        - 2 1 ─     invoke Main.bar!(_2::Vector{Float64})::Any
+        - 3 └──     return Main.nothing
+        -    => Nothing
+        - ```
+        - Observe that the type inferred for the first line is `Any`. Inference is at liberty to do
+        - this without any risk of performance problems because the first line is not used anywhere
+        - else in the function. Had this line been used elsewhere in the function, inference would
+        - have inferred its type to be `Vector{Float64}`.
+        - 
+        - This causes performance problems for Mooncake, because it uses the return type to do
+        - various things, including allocating storage for quantities required on the reverse-pass.
+        - Consequently, inference infering `Any` rather than `Vector{Float64}` causes type
+        - instabilities in the code that Mooncake generates, which can have catastrophic conseqeuences
+        - for performance.
+        - 
+        - # The Solution
+        - 
+        - `:invoke` expressions contain the `Core.MethodInstance` associated to them, which contains
+        - a `Core.CodeCache`, which contains the return type of the `:invoke`. This function looks
+        - for `:invoke` statements whose return type is inferred to be `Any` in `ir`, and modifies it
+        - to be the return type given by the code cache.
+        - """
+       39 function fix_up_invoke_inference!(ir::IRCode)::IRCode
+       39     stmts = ir.stmts
+       39     for n in 1:length(stmts)
+    36329         if Meta.isexpr(stmt(stmts)[n], :invoke) && CC.widenconst(stmts.type[n]) == Any
+        1             mi = stmt(stmts)[n].args[1]::Core.MethodInstance
+        2             R = isdefined(mi, :cache) ? mi.cache.rettype : CC.return_type(mi.specTypes)
+        1             stmts.type[n] = R
+        -         end
+    72619     end
+       39     return ir
+        - end
+        - 
+        - """
+        -     foreigncall_to_call(inst, sp_map::Dict{Symbol, CC.VarState})
+        - 
+        - If `inst` is a `:foreigncall` expression translate it into an equivalent `:call` expression.
+        - If anything else, just return `inst`. See `Mooncake._foreigncall_` for details.
+        - 
+        - `sp_map` maps the names of the static parameters to their values. This function is intended
+        - to be called in the context of an `IRCode`, in which case the values of `sp_map` are given
+        - by the `sptypes` field of said `IRCode`. The keys should generally be obtained from the
+        - `Method` from which the `IRCode` is derived. See `Mooncake.normalise!` for more details.
+        - 
+        - The purpose of this transformation is to make it possible to differentiate `:foreigncall`
+        - expressions in the same way as a primitive `:call` expression, i.e. via an `rrule!!`.
+        - """
+    36329 function foreigncall_to_call(inst, sp_map::Dict{Symbol,CC.VarState})
+    36329     if Meta.isexpr(inst, :foreigncall)
+        -         # See Julia's AST devdocs for info on `:foreigncall` expressions.
+        0         args = inst.args
+        0         name = __extract_foreigncall_name(args[1])
+        0         RT = Val(interpolate_sparams(args[2], sp_map))
+        0         AT = (map(x -> Val(interpolate_sparams(x, sp_map)), args[3])...,)
+        0         nreq = Val(args[4])
+        0         calling_convention = Val(args[5] isa QuoteNode ? args[5].value : args[5])
+        0         x = args[6:end]
+        0         return Expr(:call, _foreigncall_, name, RT, AT, nreq, calling_convention, x...)
+        -     else
+    36329         return inst
+        -     end
+        - end
+        - 
+        - # Copied from Umlaut.jl.
+        - __extract_foreigncall_name(x::Symbol) = Val(x)
+        - function __extract_foreigncall_name(x::Expr)
+        -     # Make sure that we're getting the expression that we're expecting.
+        -     !Meta.isexpr(x, :call) && error("unexpected expr $x")
+        -     !isa(x.args[1], GlobalRef) && error("unexpected expr $x")
+        -     x.args[1].name != :tuple && error("unexpected expr $x")
+        -     length(x.args) != 3 && error("unexpected expr $x")
+        - 
+        -     # Parse it into a name that can be passed as a type.
+        -     v = eval(x)
+        -     return Val((Symbol(v[1]), Symbol(v[2])))
+        - end
+        - __extract_foreigncall_name(v::Tuple) = Val((Symbol(v[1]), Symbol(v[2])))
+        - __extract_foreigncall_name(x::QuoteNode) = __extract_foreigncall_name(x.value)
+        0 function __extract_foreigncall_name(x::GlobalRef)
+        0     return __extract_foreigncall_name(getglobal(x.mod, x.name))
+        - end
+        - 
+        - # Copied from Umlaut.jl. Originally, adapted from
+        - # https://github.com/JuliaDebug/JuliaInterpreter.jl/blob/aefaa300746b95b75f99d944a61a07a8cb145ef3/src/optimize.jl#L239
+        0 function interpolate_sparams(@nospecialize(t::Type), sparams::Dict{Symbol,CC.VarState})
+        0     t isa Core.TypeofBottom && return t
+        0     while t isa UnionAll
+        0         t = t.body
+        0     end
+        0     t = t::DataType
+        0     if Base.isvarargtype(t)
+        0         return Expr(:(...), t.parameters[1])
+        -     end
+        0     if Base.has_free_typevars(t)
+        0         params = map(t.parameters) do @nospecialize(p)
+        0             if isa(p, TypeVar)
+        0                 return sparams[p.name].typ.val
+        0             elseif isa(p, DataType) && Base.has_free_typevars(p)
+        0                 return interpolate_sparams(p, sparams)
+        0             elseif p isa CC.VarState
+        0                 @show "doing varstate"
+        0                 p.typ
+        -             else
+        0                 return p
+        -             end
+        -         end
+        0         T = t.name.Typeofwrapper.parameters[1]
+        0         return T{params...}
+        -     end
+        0     return t
+        - end
+        - 
+        - """
+        -     new_to_call(x)
+        - 
+        - If instruction `x` is a `:new` expression, replace it with a `:call` to `Mooncake._new_`.
+        - Otherwise, return `x`.
+        - 
+        - The purpose of this transformation is to make it possible to differentiate `:new`
+        - expressions in the same way as a primitive `:call` expression, i.e. via an `rrule!!`.
+        - """
+    36329 new_to_call(x) = Meta.isexpr(x, :new) ? Expr(:call, _new_, x.args...) : x
+        - 
+        - """
+        -     splatnew_to_call(x)
+        - 
+        - If instruction `x` is a `:splatnew` expression, replace it with a `:call` to
+        - `Mooncake._splat_new_`. Otherwise return `x`.
+        - 
+        - The purpose of this transformation is to make it possible to differentiate `:splatnew`
+        - expressions in the same way as a primitive `:call` expression, i.e. via an `rrule!!`.
+        - """
+    36329 splatnew_to_call(x) = Meta.isexpr(x, :splatnew) ? Expr(:call, _splat_new_, x.args...) : x
+        - 
+        - """
+        -     intrinsic_to_function(inst)
+        - 
+        - If `inst` is a `:call` expression to a `Core.IntrinsicFunction`, replace it with a call to
+        - the corresponding `function` from `Mooncake.IntrinsicsWrappers`, else return `inst`.
+        - 
+        - `cglobal` is a special case -- it requires that its first argument be static in exactly the
+        - same way as `:foreigncall`. See `IntrinsicsWrappers.__cglobal` for more info.
+        - 
+        - The purpose of this transformation is to make it possible to use dispatch to write rules for
+        - intrinsic calls using dispatch in a type-stable way. See [`IntrinsicsWrappers`](@ref) for
+        - more context.
+        - """
+    36329 function intrinsic_to_function(inst)
+    66511     return Meta.isexpr(inst, :call) ? Expr(:call, lift_intrinsic(inst.args...)...) : inst
+        - end
+        - 
+     3898 lift_intrinsic(x...) = x
+     5888 lift_intrinsic(x::GlobalRef, args...) = lift_intrinsic(getglobal(x.mod, x.name), args...)
+     2249 function lift_intrinsic(x::Core.IntrinsicFunction, v, args...)
+     2249     if x === cglobal
+        0         return IntrinsicsWrappers.__cglobal, __extract_foreigncall_name(v), args...
+        -     else
+     2249         return IntrinsicsWrappers.translate(Val(x)), v, args...
+        -     end
+        - end
+        0 lift_intrinsic(::typeof(Core._apply_iterate), args...) = _apply_iterate_equivalent, args...
+        - 
+        - """
+        -     lift_getfield_and_others(inst)
+        - 
+        - Converts expressions of the form `getfield(x, :a)` into `lgetfield(x, Val(:a))`. This has
+        - identical semantics, but is performant in the absence of proper constant propagation.
+        - 
+        - Does the same for...
+        - """
+    36329 function lift_getfield_and_others(inst)
+    61780     Meta.isexpr(inst, :call) || return inst
+    12294     f = __get_arg(inst.args[1])
+     6147     if f === getfield && length(inst.args) == 3 && inst.args[3] isa Union{QuoteNode,Int}
+     1777         field = inst.args[3]
+     3549         new_field = field isa Int ? Val(field) : Val(field.value)
+     1777         return Expr(:call, lgetfield, inst.args[2], new_field)
+     4370     elseif f === getfield &&
+        -         length(inst.args) == 4 &&
+        -         inst.args[3] isa Union{QuoteNode,Int} &&
+        -         inst.args[4] isa Bool
+      574         field = inst.args[3]
+      574         new_field = field isa Int ? Val(field) : Val(field.value)
+      574         return Expr(:call, lgetfield, inst.args[2], new_field, Val(inst.args[4]))
+     3796     elseif f === setfield! &&
+        -         length(inst.args) == 4 &&
+        -         inst.args[3] isa Union{QuoteNode,Int}
+        0         name = inst.args[3]
+        0         new_name = name isa Int ? Val(name) : Val(name.value)
+        0         return Expr(:call, lsetfield!, inst.args[2], new_name, inst.args[4])
+        -     else
+     3796         return inst
+        -     end
+        - end
+        - 
+        - __get_arg(x::GlobalRef) = getglobal(x.mod, x.name)
+        0 __get_arg(x::QuoteNode) = x.value
+    12294 __get_arg(x) = x
+        - 
+        - # memoryrefget and memoryrefset! were introduced in 1.11.
+        - @static if VERSION >= v"1.11-"
+        -     """
+        -         lift_memoryrefget_and_memoryrefset_builtins(inst)
+        - 
+        -     Replaces memoryrefget -> lmemoryrefget and memoryrefset! -> lmemoryrefset! if their final
+        -     two arguments (`ordering` and `boundscheck`) are constants. See [`lmemoryrefget`] and
+        -     [`lmemoryrefset!`](@ref) for more context.
+        -     """
+    36329     function lift_memoryrefget_and_memoryrefset_builtins(inst)
+    61780         Meta.isexpr(inst, :call) || return inst
+    12294         f = __get_arg(inst.args[1])
+    12294         if f == Core.memoryrefget && length(inst.args) == 4
+       64             ordering = inst.args[3]
+       64             boundscheck = inst.args[4]
+       64             if ordering isa QuoteNode && boundscheck isa Bool
+       64                 new_ordering = Val(ordering.value)
+       64                 return Expr(
+        -                     :call, lmemoryrefget, inst.args[2], new_ordering, Val(boundscheck)
+        -                 )
+        -             else
+        0                 return inst
+        -             end
+    12166         elseif f == Core.memoryrefset! && length(inst.args) == 5
+       53             ordering = inst.args[4]
+       53             boundscheck = inst.args[5]
+       53             if ordering isa QuoteNode && boundscheck isa Bool
+       53                 new_ordering = Val(ordering.value)
+       53                 bc = Val(boundscheck)
+       53                 return Expr(
+        -                     :call, lmemoryrefset!, inst.args[2], inst.args[3], new_ordering, bc
+        -                 )
+        -             else
+        0                 return inst
+        -             end
+        -         else
+     6030             return inst
+        -         end
+        -     end
+        - 
+        - else
+        - 
+        -     # memoryrefget and memoryrefset! do not exist before v1.11.
+        -     lift_memoryrefget_and_memoryrefset_builtins(inst) = inst
+        - end
+        - 
+        - """
+        -     gc_preserve(xs...)
+        - 
+        - A no-op function. Its `rrule!!` ensures that the memory associated to `xs` is not freed
+        - until the pullback that it returns is run.
+        - """
+        - @inline gc_preserve(xs...) = nothing
+        - 
+        - @is_primitive MinimalCtx Tuple{typeof(gc_preserve),Vararg{Any,N}} where {N}
+        - 
+        - function rrule!!(f::CoDual{typeof(gc_preserve)}, xs::CoDual...)
+        -     pb = NoPullback(f, xs...)
+        -     gc_preserve_pb!!(::NoRData) = GC.@preserve xs pb(NoRData())
+        -     return zero_fcodual(nothing), gc_preserve_pb!!
+        - end
+        - 
+        - """
+        -     lift_gc_preserve(inst)
+        - 
+        - Expressions of the form
+        - ```julia
+        - y = GC.@preserve x1 x2 foo(args...)
+        - ```
+        - get lowered to
+        - ```julia
+        - token = Expr(:gc_preserve_begin, x1, x2)
+        - y = expr
+        - Expr(:gc_preserve_end, token)
+        - ```
+        - These expressions guarantee that any memory associated `x1` and `x2` not be freed until
+        - the `:gc_preserve_end` expression is reached.
+        - 
+        - In the context of reverse-mode AD, we must ensure that the memory associated to `x1`, `x2`
+        - and their fdata is available during the reverse pass code associated to `expr`.
+        - We do this by preventing the memory from being freed until the `:gc_preserve_begin` is
+        - reached on the reverse pass.
+        - 
+        - To achieve this, we replace the primal code with
+        - ```julia
+        - # store `x` in `pb_gc_preserve` to prevent it from being freed.
+        - _, pb_gc_preserve = rrule!!(zero_fcodual(gc_preserve), x1, x2)
+        - 
+        - # Differentiate the `:call` expression in the usual way.
+        - y, foo_pb = rrule!!(zero_fcodual(foo), args...)
+        - 
+        - # Do not permit the GC to free `x` here.
+        - nothing
+        - ```
+        - The pullback should be something along the lines of
+        - ```julia
+        - # no pullback associated to `nothing`.
+        - nothing
+        - 
+        - # Run the pullback associated to `foo` in the usual manner. `x` must be available.
+        - _, dargs... = foo_pb(dy)
+        - 
+        - # No-op pullback associated to `gc_preserve`.
+        - pb_gc_preserve(NoRData())
+        - ```
+        - """
+    36329 function lift_gc_preservation(inst)
+    36329     Meta.isexpr(inst, :gc_preserve_begin) && return Expr(:call, gc_preserve, inst.args...)
+    36329     Meta.isexpr(inst, :gc_preserve_end) && return nothing
+    36329     return inst
+        - end
+        - 
+        - """
+        -     const_prop_gotoifnots(ir::IRCode)
+        - 
+        - Replace all occurences in `ir` of `goto %n if not true` in block `b` with a `goto b + 1`,
+        - and all occurences of `goto %n if not false` with `goto n`, and make the adjustments to
+        - `ir` that this necessitates.
+        - """
+       39 function const_prop_gotoifnots!(ir::IRCode)
+       39     stmts = stmt(ir.stmts)
+       39     for (n, stmt) in enumerate(stmts)
+    36329         if stmt isa GotoIfNot
+   341005             _current_blk = findfirst(i -> i > n, ir.cfg.index)
+     1225             current_blk = _current_blk === nothing ? length(ir.cfg.blocks) : _current_blk
+     1225             if stmt.cond === true
+        0                 stmts[n] = nothing
+        0                 remove_edge!(ir, current_blk, stmt.dest)
+     1225             elseif stmt.cond === false
+      181                 stmts[n] = GotoNode(stmt.dest)
+      181                 remove_edge!(ir, current_blk, current_blk + 1)
+        -             end
+        -         end
+    72619     end
+       39     return ir
+        - end
+        - 
+        - """
+        -     remove_edge!(ir::IRCode, from::Int, to::Int)
+        - 
+        - Removes an edge in `ir` from `from` to `to`. See implementation for what this entails.
+        - 
+        - Note: this is slightly different from `Core.Compiler.kill_edge!`, in that it also updates
+        - `PhiNode`s in the `to` block. Moreover, the available methods of `remove_edge!` differ
+        - between 1.10 and 1.11, so we need something which is stable across both.
+        - """
+      181 function remove_edge!(ir::IRCode, from::Int, to::Int)
+        - 
+        -     # Remove the `to` block from the `from` block's successor list.
+      181     succs = ir.cfg.blocks[from].succs
+      724     deleteat!(succs, findfirst(n -> n == to, succs))
+        - 
+        -     # Remove the `from` block from the `to` block's predecessor list.
+      181     to_blk = ir.cfg.blocks[to]
+      181     preds = to_blk.preds
+      543     deleteat!(preds, findfirst(n -> n == from, preds))
+        - 
+        -     # Remove the `from` edge from any `PhiNode`s at the start of next blk.
+      181     stmts = stmt(ir.stmts)
+      362     for n in to_blk.stmts
+      181         stmt = stmts[n]
+      181         if stmt isa PhiNode
+        0             edge_index = findfirst(i::Int32 -> i == from, stmt.edges)
+        0             edge_index === nothing && continue
+        0             deleteat!(stmt.edges, edge_index)
+        0             deleteat!(stmt.values, edge_index)
+        -         else
+      181             break
+        -         end
+        0     end
+      181     return nothing
+        - end
+        - 
+        - """
+        -     verify_no_constant_gotoifnots(ir::IRCode)
+        - 
+        - Verify that we have successfully removed all instances of `goto %n if not true` and
+        - `goto %n if not false`, as these can be reduced to simpler nodes (namely, `GotoNode`s or
+        - "fallthrough"s). Moreover, removing them tends to yield performance improvements by reducing
+        - the amount of information Mooncake must keep in its block stacks.
+        - 
+        - This is essentially just testing functionality for `const_prop_constant_gotoifnots`. This is
+        - usually run each time a rule is compiled, as it is cheap, and because it is hard to
+        - construct a convincing set of test cases which, if passed at test-time, would indicate we
+        - were done.
+        - """
+       39 function verify_no_constant_gotoifnots(ir::IRCode)
+       39     for (n, stmt) in enumerate(stmt(ir.stmts))
+    36329         if stmt isa GotoIfNot
+     1044             if stmt.cond isa Bool
+        0                 println("Constant GotoIfNot found at SSA $n in the following IRCode:")
+        0                 dislay(ir)
+        0                 println()
+        0                 throw(error("Bad IR, see above."))
+        -             end
+        -         end
+    36329     end
+        - end
