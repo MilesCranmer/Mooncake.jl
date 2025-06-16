@@ -1,0 +1,114 @@
+        - struct CoDual{Tx,Tdx}
+     1859     x::Tx
+        -     dx::Tdx
+        - end
+        - 
+        - # Always sharpen the first thing if it's a type so static dispatch remains possible.
+        0 function CoDual(x::Type{P}, dx::NoFData) where {P}
+        0     return CoDual{@isdefined(P) ? Type{P} : typeof(x),NoFData}(P, dx)
+        - end
+        - 
+        0 function CoDual(x::Type{P}, dx::NoTangent) where {P}
+        0     return CoDual{@isdefined(P) ? Type{P} : typeof(x),NoTangent}(P, dx)
+        - end
+        - 
+     4738 primal(x::CoDual) = x.x
+      230 tangent(x::CoDual) = x.dx
+        - Base.copy(x::CoDual) = CoDual(copy(primal(x)), copy(tangent(x)))
+        - _copy(x::P) where {P<:CoDual} = x
+        - 
+        - """
+        -     zero_codual(x)
+        - 
+        - Equivalent to `CoDual(x, zero_tangent(x))`.
+        - """
+        0 zero_codual(x) = CoDual(x, zero_tangent(x))
+        - 
+        - """
+        -     uninit_codual(x)
+        - 
+        - Equivalent to `CoDual(x, uninit_tangent(x))`.
+        - """
+        - uninit_codual(x) = CoDual(x, uninit_tangent(x))
+        - 
+    18107 function _codual_internal(::Type{P}, f::F, extractor::E) where {P,F,E}
+    18107     P == Union{} && return Union{}
+    17965     P == DataType && return CoDual
+    17965     P isa Union && return Union{f(P.a),f(P.b)}
+        - 
+    18517     if P <: Tuple && !all(isconcretetype, (P.parameters...,))
+        0         field_types = (P.parameters...,)
+        0         union_fields = _findall(Base.Fix2(isa, Union), field_types)
+        0         if length(union_fields) == 1 &&
+        -             all(p -> p isa Union || isconcretetype(p), field_types)
+        0             P_split = split_union_tuple_type(field_types)
+        0             return Union{f(P_split.a),f(P_split.b)}
+        -         end
+        -     end
+        - 
+    17965     P <: UnionAll && return CoDual # P is abstract, so we don't know its tangent type.
+    17965     return isconcretetype(P) ? CoDual{P,extractor(P)} : CoDual
+        - end
+        - 
+        - """
+        -     codual_type(P::Type)
+        - 
+        - The type of the `CoDual` which contains instances of `P` and associated tangents.
+        - """
+        - codual_type(::Type{P}) where {P} = _codual_internal(P, codual_type, tangent_type)
+        - 
+        - function codual_type(p::Type{Type{P}}) where {P}
+        -     return @isdefined(P) ? CoDual{Type{P},NoTangent} : CoDual{_typeof(p),NoTangent}
+        - end
+        - 
+        - """
+        -     fcodual_type(P::Type)
+        - 
+        - The type of the `CoDual` which contains instances of `P` and its fdata.
+        - """
+    18107 function fcodual_type(::Type{P}) where {P}
+    35646     return _codual_internal(P, fcodual_type, P -> fdata_type(tangent_type(P)))
+        - end
+        - 
+     1156 function fcodual_type(p::Type{Type{P}}) where {P}
+     1156     return @isdefined(P) ? CoDual{Type{P},NoFData} : CoDual{_typeof(p),NoFData}
+        - end
+        - 
+      828 to_fwds(x::CoDual) = CoDual(primal(x), fdata(tangent(x)))
+        - 
+        0 to_fwds(x::CoDual{Type{P}}) where {P} = CoDual{Type{P},NoFData}(primal(x), NoFData())
+        - 
+      824 zero_fcodual(p) = to_fwds(zero_codual(p))
+        - 
+        - """
+        -     uninit_fcodual(x)
+        - 
+        - Like `zero_fcodual`, but doesn't guarantee that the value of the fdata is initialised.
+        - See implementation for details, as this function is subject to change.
+        - """
+      117 @inline uninit_fcodual(x::P) where {P} = CoDual(x, uninit_fdata(x))
+        - 
+        - struct NoPullback{R<:Tuple}
+        4     r::R
+        - end
+        - 
+        - _copy(x::P) where {P<:NoPullback} = P(_copy(x.r))
+        - 
+        - """
+        -     NoPullback(args::CoDual...)
+        - 
+        - Construct a `NoPullback` from the arguments passed to an `rrule!!`. For each argument,
+        - extracts the primal value, and constructs a `LazyZeroRData`. These are stored in a
+        - `NoPullback` which, in the reverse-pass of AD, instantiates these `LazyZeroRData`s and
+        - returns them in order to perform the reverse-pass of AD.
+        - 
+        - The advantage of this approach is that if it is possible to construct the zero rdata element
+        - for each of the arguments lazily, the `NoPullback` generated will be a singleton type. This
+        - means that AD can avoid generating a stack to store this pullback, which can result in
+        - significant performance improvements.
+        - """
+        0 function NoPullback(args::Vararg{CoDual,N}) where {N}
+        0     return NoPullback(tuple_map(lazy_zero_rdata ∘ primal, args))
+        - end
+        - 
+        0 @inline (pb::NoPullback)(_) = tuple_map(instantiate, pb.r)

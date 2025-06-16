@@ -1,0 +1,38 @@
+        - """
+        -     Stack{T}()
+        - 
+        - A stack specialised for reverse-mode AD.
+        - 
+        - Semantically equivalent to a usual stack, but never de-allocates memory once allocated.
+        - """
+        - mutable struct Stack{T}
+        -     const memory::Vector{T}
+        -     position::Int
+      967     Stack{T}() where {T} = new{T}(Vector{T}(undef, 0), 0)
+        - end
+        - 
+      374 _copy(::Stack{T}) where {T} = Stack{T}()
+        - 
+        0 @inline function Base.push!(x::Stack{T}, val::T) where {T}
+     4494     position = x.position + 1
+     4494     memory = x.memory
+     4494     x.position = position
+     4494     if position <= length(memory)
+     2247         @inbounds memory[position] = val
+        -     else
+     2247         @noinline push!(memory, val)
+        -     end
+     4494     return nothing
+        - end
+        - 
+        0 @inline function Base.pop!(x::Stack)
+     4494     position = x.position
+     4494     val = @inbounds x.memory[position]
+     4494     x.position = position - 1
+     4494     return val
+        - end
+        - 
+     1113 struct SingletonStack{T} end
+        - 
+        0 Base.push!(::SingletonStack, ::Any) = nothing
+        0 Base.pop!(::SingletonStack{T}) where {T} = T.instance
