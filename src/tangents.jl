@@ -340,20 +340,20 @@ tangent_type(::Type{Method}) = NoTangent
 tangent_type(::Type{<:Enum}) = NoTangent
 
 function split_union_tuple_type(tangent_types)
+    union_inds = findall(T -> T isa Union, tangent_types)
+    isempty(union_inds) && return Tuple{tangent_types...}
 
-    # Create first split.
-    ta_types = map(tangent_types) do T
-        return T isa Union ? T.a : T
+    options_for_each_union = map(i -> tangent_types[i].parameters, union_inds)
+
+    type_options = map(Base.product(options_for_each_union...)) do choices
+        new_types = Any[tangent_types...]
+        for (i, choice) in enumerate(choices)
+            new_types[union_inds[i]] = choice
+        end
+        Tuple{new_types...}
     end
-    ta = Tuple{ta_types...}
 
-    # Create second split.
-    tb_types = map(tangent_types) do T
-        return T isa Union ? T.b : T
-    end
-    tb = Tuple{tb_types...}
-
-    return Union{ta,tb}
+    return Union{type_options...}
 end
 
 # Generated functions cannot emit closures, so this is defined here for use below.
@@ -392,7 +392,7 @@ isconcrete_or_union(p) = p isa Union || isconcretetype(p)
 
         # If exactly one of the field types is a Union, then split.
         union_fields = _findall(Base.Fix2(isa, Union), tangent_types)
-        if length(union_fields) == 1 && all(tuple_map(isconcrete_or_union, tangent_types))
+        if !isempty(union_fields) && all(tuple_map(isconcrete_or_union, tangent_types))
             return split_union_tuple_type(tangent_types)
         end
 
