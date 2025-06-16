@@ -364,9 +364,9 @@ function _rrule_getfield_common(
         Cu = _child_union_type(Tv, Val(D))
         raw = map(value_primal, pt.children) do _, child_t
             if child_t isa Mooncake.NoTangent
-                Mooncake.NoFData()
+                ChildRData{Tv,D}(Mooncake.NoFData())
             else
-                (; null = Mooncake.NoFData(), x = _deep_unwrap_nullable(child_t))
+                ChildRData{Tv,D}((; null = Mooncake.NoFData(), x = _deep_unwrap_nullable(child_t)))
             end
         end
         convert(NTuple{D,Cu}, raw)
@@ -508,9 +508,24 @@ end
 # Helper for children rdata element type
 ################################################################################
 
-# Return `Union{NoFData, NamedTuple{(:null,:x), (NoFData, TangentNode{Tv,D})}}`
+# Concrete wrapper whose field has the exact union type demanded by the tests
+struct ChildRData{Tv,D}
+    data::Union{
+        Mooncake.NoFData,
+        NamedTuple{(:null,:x),Tuple{Mooncake.NoFData,TangentNode{Tv,D}}}
+    }
+end
+
+Mooncake.fdata(c::ChildRData) = c.data
+Mooncake.rdata(::ChildRData) = Mooncake.NoRData()
+
+# Tell tests how to compare two ChildRData values
+Mooncake.TestUtils.has_equal_data_internal(x::ChildRData, y::ChildRData, equndef::Bool, d::Dict{Tuple{UInt,UInt},Bool}) =
+    Mooncake.TestUtils.has_equal_data_internal(x.data, y.data, equndef, d)
+
+# Alias generator for convenience
 @generated function _child_union_type(::Type{Tv}, ::Val{D}) where {Tv,D}
-    return :(Union{Mooncake.NoFData, NamedTuple{(:null,:x),Tuple{Mooncake.NoFData,TangentNode{$Tv,$D}}}})
+    return :(ChildRData{$Tv,$D})
 end
 
 end
