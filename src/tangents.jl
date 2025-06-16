@@ -380,6 +380,7 @@ isconcrete_or_union(p) = p isa Union || isconcretetype(p)
     # Construct a Tuple type of the same length as `P`, containing all `NoTangent`s.
     T_all_notangent = Tuple{Vararg{NoTangent,N}}
 
+    # @info "" tangent_types P
     return quote
 
         # Get tangent types for all fields. If they're all `NoTangent`, return `NoTangent`.
@@ -428,6 +429,7 @@ end
     (isabstracttype(P) || !isconcretetype(P)) && return Any
 
     tangent_fields_types_expr = Expr(:curly, Tuple, tangent_field_types_exprs(P)...)
+    # @info "" tangent_fields_types_expr
     T_all_notangent = Tuple{Vararg{NoTangent,fieldcount(P)}}
     return quote
 
