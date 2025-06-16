@@ -365,17 +365,9 @@ function _rrule_getfield_common(
         ntuple(Val(D)) do idx
             child_t = pt.children[idx]
             if child_t isa Mooncake.NoTangent
-                # Runtime value is NoFData, but include dead branch so
-                # compile-time inference sees the NamedTuple variant too.
-                (
-                    false ? (; null = Mooncake.NoFData(), x = TangentNode{Tv,D}(NoTangent()))
-                          : Mooncake.NoFData()
-                )::Cu
+                Cu(Mooncake.NoFData())
             else
-                (
-                    false ? Mooncake.NoFData()
-                          : (; null = Mooncake.NoFData(), x = _deep_unwrap_nullable(child_t))
-                )::Cu
+                Cu((; null = Mooncake.NoFData(), x = _deep_unwrap_nullable(child_t)))
             end
         end
     else
@@ -516,12 +508,27 @@ end
 # Helper for children rdata element type
 ################################################################################
 
-# Union element type expected by the DynamicExpressions tests
-#   Union{NoFData,
-#         @NamedTuple{null::NoFData,
-#                     x::TangentNode{Tv,D}}}
+# Concrete wrapper whose field has exactly the union type that the
+# DynamicExpressions tests expect for each children-rdata element.
+struct ChildRData{Tv,D}
+    data::Union{
+        Mooncake.NoFData,
+        NamedTuple{(:null,:x),Tuple{Mooncake.NoFData,TangentNode{Tv,D}}}
+    }
+end
+
+# Integrate with Mooncake utilities
+Mooncake.fdata(c::ChildRData) = c.data
+Mooncake.rdata(::ChildRData) = Mooncake.NoRData()
+
+# Equality helper for the test suite
+Mooncake.TestUtils.has_equal_data_internal(
+    x::ChildRData, y::ChildRData, equndef::Bool, d::Dict{Tuple{UInt,UInt},Bool},
+) = Mooncake.TestUtils.has_equal_data_internal(x.data, y.data, equndef, d)
+
+# Alias generator: return the concrete wrapper type for given Tv,D
 @generated function _child_union_type(::Type{Tv}, ::Val{D}) where {Tv,D}
-    return :(Union{Mooncake.NoFData, NamedTuple{(:null,:x),Tuple{Mooncake.NoFData,TangentNode{$Tv,$D}}}})
+    return :(ChildRData{$Tv,$D})
 end
 
 end
