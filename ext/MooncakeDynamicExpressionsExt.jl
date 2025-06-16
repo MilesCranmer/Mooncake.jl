@@ -366,7 +366,7 @@ function _rrule_getfield_common(
             if child_t isa Mooncake.NoTangent
                 convert(Cu, Mooncake.NoFData())
             else
-                convert(Cu, (; null = Mooncake.NoFData(), x = child_t))
+                convert(Cu, (; null = Mooncake.NoFData(), x = _deep_unwrap_nullable(child_t)))
             end
         end
     else
