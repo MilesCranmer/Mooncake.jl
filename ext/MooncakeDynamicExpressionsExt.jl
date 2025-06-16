@@ -362,24 +362,14 @@ function _rrule_getfield_common(
         Mooncake.fdata(pt.val)
     elseif field_sym === :children
         Cu = _child_union_type(Tv, Val(D))
-        map(value_primal, pt.children) do _, child_t
+        raw = map(value_primal, pt.children) do _, child_t
             if child_t isa Mooncake.NoTangent
-                # Force the compiler to keep the wider `Union` type (`Cu`) by
-                # injecting a never-taken `false ? …` branch that returns the
-                # `NamedTuple` variant.  At runtime we still return
-                # `NoFData()`, but type-inference cannot prune the branch, so
-                # the elementʼs static type is exactly `Cu`.
-                (
-                    false ? (; null = Mooncake.NoFData(), x = TangentNode{Tv,D}(NoTangent())) : Mooncake.NoFData()
-                )::Cu
+                Mooncake.NoFData()
             else
-                # Symmetric: runtime value is the `NamedTuple`, but we keep a
-                # dead `NoFData()` path to maintain the union element type.
-                (
-                    false ? Mooncake.NoFData() : (; null = Mooncake.NoFData(), x = _deep_unwrap_nullable(child_t))
-                )::Cu
+                (; null = Mooncake.NoFData(), x = _deep_unwrap_nullable(child_t))
             end
         end
+        convert(NTuple{D,Cu}, raw)
     else
         Mooncake.NoFData()
     end
