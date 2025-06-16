@@ -356,6 +356,10 @@ function (pb::Pullback{T,field_sym,n_args})(Δy_rdata) where {T,field_sym,n_args
     return ntuple(_ -> Mooncake.NoRData(), Val(n_args))
 end
 
+@generated function _map_fdata(f, 값1::T1, 값2::T2) where {T1<:Tuple,T2<:Tuple}
+    return Base.Cartesian.gensyms(:map_fdata, length(T1.parameters))
+end
+
 function _rrule_getfield_common(
     obj_cd::Mooncake.CoDual{N,TangentNode{Tv,D}}, ::Val{field_sym}, ::Val{n_args}
 ) where {T,D,N<:AbstractExpressionNode{T,D},Tv,field_sym,n_args}
@@ -367,7 +371,7 @@ function _rrule_getfield_common(
     fdata_for_output = if field_sym === :val
         Mooncake.fdata(pt.val)
     elseif field_sym === :children
-        map(value_primal, pt.children) do child_p, child_t
+        _map_fdata(value_primal, pt.children) do child_p, child_t
             if child_t isa Mooncake.NoTangent
                 Mooncake.uninit_fdata(child_p)
             else
