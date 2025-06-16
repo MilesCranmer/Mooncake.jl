@@ -365,7 +365,7 @@ function _rrule_getfield_common(
             if child_t isa Mooncake.NoTangent
                 Mooncake.uninit_fdata(child_p)
             else
-                (; null=Mooncake.NoFData(), x=_deep_unwrap_nullable(child_t))
+                (; null=Mooncake.NoFData(), x=_unwrap_nullable(child_t))
             end
         end
     else
