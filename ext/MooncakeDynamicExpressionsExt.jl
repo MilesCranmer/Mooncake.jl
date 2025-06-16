@@ -364,9 +364,9 @@ function _rrule_getfield_common(
         Cu = _child_union_type(Tv, Val(D))
         map(value_primal, pt.children) do _, child_t
             if child_t isa Mooncake.NoTangent
-                (Mooncake.NoFData()::Cu)
+                ChildRData{Tv,D}(Mooncake.NoFData())
             else
-                ((; null = Mooncake.NoFData(), x = _deep_unwrap_nullable(child_t))::Cu)
+                ChildRData{Tv,D}((; null=Mooncake.NoFData(), x=_deep_unwrap_nullable(child_t)))
             end
         end
     else
@@ -507,9 +507,28 @@ end
 # Helper for children rdata element type
 ################################################################################
 
-# Return `Union{NoFData, NamedTuple{(:null,:x), (NoFData, TangentNode{Tv,D})}}`
+# Return `ChildRData{$Tv,$D}`
 @generated function _child_union_type(::Type{Tv}, ::Val{D}) where {Tv,D}
-    return :(Union{Mooncake.NoFData, NamedTuple{(:null,:x),Tuple{Mooncake.NoFData,TangentNode{$Tv,$D}}}})
+    return :(ChildRData{$Tv,$D})
 end
+
+################################################################################
+# ChildRData wrapper for children r-data elements
+################################################################################
+
+struct ChildRData{Tv,D}
+    data::Union{
+        Mooncake.NoFData,
+        NamedTuple{(:null, :x), Tuple{Mooncake.NoFData, TangentNode{Tv,D}}}
+    }
+end
+
+# Mooncake integrations
+Mooncake.fdata(c::ChildRData) = c.data
+Mooncake.rdata(::ChildRData) = Mooncake.NoRData()
+
+# Equality helper for tests
+Mooncake.TestUtils.has_equal_data_internal(x::ChildRData, y::ChildRData, equndef::Bool, d::Dict{Tuple{UInt,UInt},Bool}) =
+    Mooncake.TestUtils.has_equal_data_internal(x.data, y.data, equndef, d)
 
 end
