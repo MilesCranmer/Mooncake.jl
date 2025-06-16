@@ -363,7 +363,7 @@ function _rrule_getfield_common(
     elseif field_sym === :children
         map(value_primal, pt.children) do child_p, child_t
             if child_t isa Mooncake.NoTangent
-                Mooncake.uninit_fdata(child_p)
+                Mooncake.NoFData()
             else
                 (; null=Mooncake.NoFData(), x=_unwrap_nullable(child_t))
             end
