@@ -1733,8 +1733,16 @@ function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
     sig = Tuple{map(_typeof ∘ primal, args)...}
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
-        rule = build_rrule(get_interpreter(), sig; debug_mode=dynamic_rule.debug_mode)
-        dynamic_rule.cache[sig] = rule
+        interp = get_interpreter()
+        matches = Base.method_matches(sig, interp.methods)
+        if length(matches) == 1
+            mi = Core.Compiler.specialize_method(only(matches))
+            rule = LazyDerivedRule(mi, dynamic_rule.debug_mode)
+            dynamic_rule.cache[sig] = rule
+        else
+            rule = build_rrule(interp, sig; debug_mode=dynamic_rule.debug_mode)
+            dynamic_rule.cache[sig] = rule
+        end
     end
     return rule(args...)
 end
