@@ -358,19 +358,20 @@ function _rrule_getfield_common(
 
     value_primal = getfield(p, field_sym)
 
-    fdata_for_output = if field_sym === :val
-        Mooncake.fdata(pt.val)
-    elseif field_sym === :children
-        map(value_primal, pt.children) do child_p, child_t
+    begin
+        const ChildUnion{Tv,D} = Union{
+            Mooncake.NoFData,
+            NamedTuple{(:null,:x),Tuple{Mooncake.NoFData,TangentNode{Tv,D}}}
+        }
+        map(value_primal, pt.children) do _, child_t
             if child_t isa Mooncake.NoTangent
-                Mooncake.NoFData()
+                ChildUnion{Tv,D}(Mooncake.NoFData())
             else
-                (; null=Mooncake.NoFData(), x=_unwrap_nullable(child_t))
+                ChildUnion{Tv,D}((; null=Mooncake.NoFData(), x=child_t))
             end
         end
-    else
-        Mooncake.NoFData()
     end
+
     y_cd = Mooncake.CoDual(value_primal, fdata_for_output)
     return y_cd, Pullback{typeof(pt),field_sym,n_args}(pt)
 end
