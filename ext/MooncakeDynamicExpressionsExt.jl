@@ -365,14 +365,9 @@ function _rrule_getfield_common(
         ntuple(Val(D)) do idx
             child_t = pt.children[idx]
             if child_t isa Mooncake.NoTangent
-                # Runtime value is NoFData; dead branch keeps NamedTuple variant
-                (false ? (; null = Mooncake.NoFData(),
-                             x = TangentNode{Tv,D}(Mooncake.NoTangent()))
-                       : Mooncake.NoFData())::Cu
+                (Mooncake.NoFData()::Cu)
             else
-                (false ? Mooncake.NoFData()
-                       : (; null = Mooncake.NoFData(),
-                            x = _deep_unwrap_nullable(child_t)))::Cu
+                (; null = Mooncake.NoFData(), x = _deep_unwrap_nullable(child_t))::Cu
             end
         end
     else
