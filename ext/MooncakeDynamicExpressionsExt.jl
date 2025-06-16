@@ -365,9 +365,14 @@ function _rrule_getfield_common(
         ntuple(Val(D)) do idx
             child_t = pt.children[idx]
             if child_t isa Mooncake.NoTangent
-                Cu(Mooncake.NoFData())
+                # Runtime value is NoFData; dead branch keeps NamedTuple variant
+                (false ? (; null = Mooncake.NoFData(),
+                             x = TangentNode{Tv,D}(Mooncake.NoTangent()))
+                       : Mooncake.NoFData())::Cu
             else
-                Cu((; null = Mooncake.NoFData(), x = _deep_unwrap_nullable(child_t)))
+                (false ? Mooncake.NoFData()
+                       : (; null = Mooncake.NoFData(),
+                            x = _deep_unwrap_nullable(child_t)))::Cu
             end
         end
     else
@@ -508,27 +513,11 @@ end
 # Helper for children rdata element type
 ################################################################################
 
-# Concrete wrapper whose field has exactly the union type that the
-# DynamicExpressions tests expect for each children-rdata element.
-struct ChildRData{Tv,D}
-    data::Union{
-        Mooncake.NoFData,
-        NamedTuple{(:null,:x),Tuple{Mooncake.NoFData,TangentNode{Tv,D}}}
-    }
-end
-
-# Integrate with Mooncake utilities
-Mooncake.fdata(c::ChildRData) = c.data
-Mooncake.rdata(::ChildRData) = Mooncake.NoRData()
-
-# Equality helper for the test suite
-Mooncake.TestUtils.has_equal_data_internal(
-    x::ChildRData, y::ChildRData, equndef::Bool, d::Dict{Tuple{UInt,UInt},Bool},
-) = Mooncake.TestUtils.has_equal_data_internal(x.data, y.data, equndef, d)
-
-# Alias generator: return the concrete wrapper type for given Tv,D
+# Generate the union element type demanded by DynamicExpressions tests.
 @generated function _child_union_type(::Type{Tv}, ::Val{D}) where {Tv,D}
-    return :(ChildRData{$Tv,$D})
+    return :(Union{Mooncake.NoFData,
+                   NamedTuple{(:null,:x),
+                              Tuple{Mooncake.NoFData, TangentNode{$Tv,$D}}}})
 end
 
 end
