@@ -38,7 +38,7 @@ function Mooncake.tangent_type(::Type{<:AbstractExpressionNode{T,D}}) where {T,D
     Tv = Mooncake.tangent_type(T)
     return Tv === NoTangent ? NoTangent : TangentNode{Tv,D}
 end
-function Mooncake.tangent_type(::Type{Nullable{<:AbstractExpressionNode{T,D}}}) where {T,D}
+function Mooncake.tangent_type(::Type{Nullable{N}}) where {T,D,N<:AbstractExpressionNode{T,D}}
     Tv = Mooncake.tangent_type(T)
     return Union{@NamedTuple{null::NoTangent,x::TangentNode{Tv,D}},NoTangent}
 end
@@ -365,7 +365,7 @@ function _rrule_getfield_common(
             if child_t isa Mooncake.NoTangent
                 Mooncake.uninit_fdata(child_p)
             else
-                Mooncake.FData(Mooncake.fdata(child_t))
+                (; null=Mooncake.NoFData(), x=_deep_unwrap_nullable(child_t))
             end
         end
     else
@@ -485,6 +485,20 @@ end
             )
         end
     end
+end
+
+"""
+    _deep_unwrap_nullable(c)
+
+Recursively apply `_unwrap_nullable` until the value is no longer the nullable wrapper.
+This is useful when building rdata structures where we need the concrete tangent
+node rather than a nested chain of nullable wrappers.
+"""
+function _deep_unwrap_nullable(c)
+    while c isa NamedTuple{(:null, :x)}
+        c = c.x
+    end
+    return c
 end
 
 end
