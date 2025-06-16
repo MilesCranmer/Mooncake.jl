@@ -364,9 +364,9 @@ function _rrule_getfield_common(
         Cu = _child_union_type(Tv, Val(D))
         map(value_primal, pt.children) do _, child_t
             if child_t isa Mooncake.NoTangent
-                convert(Cu, Mooncake.NoFData())
+                (Mooncake.NoFData()::Cu)
             else
-                convert(Cu, (; null = Mooncake.NoFData(), x = _deep_unwrap_nullable(child_t)))
+                ((; null = Mooncake.NoFData(), x = _deep_unwrap_nullable(child_t))::Cu)
             end
         end
     else
