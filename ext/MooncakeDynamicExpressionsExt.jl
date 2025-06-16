@@ -358,7 +358,7 @@ function _rrule_getfield_common(
 
     value_primal = getfield(p, field_sym)
 
-    if field_sym === :val
+    fdata_for_output = if field_sym === :val
         Mooncake.fdata(pt.val)
     elseif field_sym === :children
         Cu = _child_union_type(Tv, Val(D))
