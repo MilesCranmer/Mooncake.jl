@@ -370,6 +370,12 @@ tangent_type(::Type{<:Base.TTY}) = NoTangent
 
 tangent_type(::Type{<:IOStream}) = NoTangent
 
+tangent_type(::Type{Base.Threads.SpinLock}) = NoTangent
+
+tangent_type(::Type{Base.Event}) = NoTangent
+
+tangent_type(::Type{Base.Threads.Condition}) = NoTangent
+
 function split_union_tuple_type(tangent_types)
 
     # Create first split.

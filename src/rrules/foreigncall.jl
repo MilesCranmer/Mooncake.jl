@@ -204,13 +204,32 @@ end
 @zero_adjoint MinimalCtx Tuple{Type{UnionAll},TypeVar,Any}
 @zero_adjoint MinimalCtx Tuple{Type{UnionAll},TypeVar,Type}
 @zero_adjoint MinimalCtx Tuple{typeof(hash),Vararg}
+@zero_adjoint MinimalCtx Tuple{typeof(setfield!), Base.Partr.taskheap, Symbol, Int32, Symbol}
+@zero_adjoint MinimalCtx Tuple{typeof(Base.Partr.multiq_insert), Task, UInt16}
 
-function rrule!!(
-    f::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{:jl_string_ptr}}, args::Vararg{CoDual,N}
-) where {N}
-    x = tuple_map(primal, args)
-    pb!! = NoPullback((NoRData(), NoRData(), tuple_map(_ -> NoRData(), args)...))
-    return uninit_fcodual(_foreigncall_(Val(:jl_string_ptr), x...)), pb!!
+for name in [
+    :jl_string_ptr,
+    :jl_enter_threaded_region,
+    :jl_new_task,
+    :jl_set_task_threadpoolid,
+    :jl_get_task_threadpoolid,
+    :jl_rand_ptls,
+    :jl_gc_disable_finalizers_internal,
+    :jl_wakeup_thread,
+    :jl_lock_field,
+    :jl_unlock_field,
+    :jl_exit_threaded_region,
+    :jl_get_task_tid,
+    :jl_set_task_tid,
+    :jl_gc_is_in_finalizer,
+]
+    @eval function rrule!!(
+        ::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$(QuoteNode(name))}}, args::Vararg{CoDual,N}
+    ) where {N}
+        x = tuple_map(primal, args)
+        pb!! = NoPullback((NoRData(), NoRData(), tuple_map(_ -> NoRData(), args)...))
+        return uninit_fcodual(_foreigncall_(Val($(QuoteNode(name))), x...)), pb!!
+    end
 end
 
 function unexepcted_foreigncall_error(name)

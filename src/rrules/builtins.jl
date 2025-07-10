@@ -109,7 +109,7 @@ import ..Mooncake:
     increment_rdata!!,
     zero_fcodual
 
-using Core.Intrinsics: atomic_pointerref
+
 
 struct MissingIntrinsicWrapperException <: Exception
     msg::String
@@ -181,8 +181,24 @@ end
 
 # atomic_fence
 # atomic_pointermodify
-# atomic_pointerref
 # atomic_pointerreplace
+
+@intrinsic atomic_pointerref
+function rrule!!(::CoDual{typeof(atomic_pointerref)}, p::CoDual{<:Ptr}, order)
+    _p = primal(p)
+    _order = primal(order)
+    dp = tangent(p)
+    a = CoDual(atomic_pointerref(_p, _order), fdata(atomic_pointerref(dp, _order)))
+    if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
+        return a, NoPullback((NoRData(), NoRData(), NoRData()))
+    else
+        function atomic_pointerref_pullback!!(da)
+            atomic_pointerset(dp, increment_rdata!!(atomic_pointerref(dp, _order), da), _order)
+            return NoRData(), NoRData(), NoRData()
+        end
+        return a, atomic_pointerref_pullback!!
+    end
+end
 
 @intrinsic atomic_pointerset
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
@@ -694,7 +710,8 @@ function rrule!!(::CoDual{typeof(setfield!)}, value::CoDual, name::CoDual, x::Co
     return rrule!!(uninit_fcodual(lsetfield!), value, literal_name, x)
 end
 
-# swapfield!
+# swapfield! - for threading infrastructure, use zero-adjoint 
+@zero_adjoint MinimalCtx Tuple{typeof(swapfield!), Base.Threads.SpinLock, Symbol, Int64, Symbol}
 
 rrule!!(::CoDual{typeof(throw)}, args::CoDual...) = throw(map(primal, args)...)
 

@@ -21,6 +21,13 @@
 @zero_adjoint DefaultCtx Tuple{typeof(Base.datatype_fielddesc_type),Vararg}
 @zero_adjoint DefaultCtx Tuple{typeof(LinearAlgebra.chkstride1),Vararg}
 @zero_adjoint DefaultCtx Tuple{typeof(Threads.nthreads),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Base.Partr.multiq_size),Int8}
+@zero_adjoint DefaultCtx Tuple{typeof(Base._wait),Task}
+@zero_adjoint DefaultCtx Tuple{typeof(Base._wait),Task,Symbol}
+@zero_adjoint DefaultCtx Tuple{typeof(filter!),typeof(istaskfailed),Vector{Task}}
+@zero_adjoint DefaultCtx Tuple{typeof(Base.workqueue_for),Int64}
+@zero_adjoint DefaultCtx Tuple{typeof(Base.enq_work),Task}
+@zero_adjoint DefaultCtx Tuple{typeof(wait),Task}
 @zero_adjoint DefaultCtx Tuple{typeof(Base.depwarn),Vararg}
 @zero_adjoint DefaultCtx Tuple{typeof(Base.reduced_indices),Vararg}
 @zero_adjoint DefaultCtx Tuple{typeof(Base.check_reducedims),Vararg}
